@@ -61,6 +61,17 @@ export default function App() {
   const [expenseToEdit, setExpenseToEdit] = useState(null);
   const [itemToDelete, setItemToDelete] = useState(null); 
 
+  // --- EFEITO DE SEGURANÇA PARA CARREGAR ESTILOS ---
+  useEffect(() => {
+    // Garante que o Tailwind CSS seja carregado se o index.html falhar
+    if (!document.getElementById('tailwind-script')) {
+      const script = document.createElement('script');
+      script.id = 'tailwind-script';
+      script.src = 'https://cdn.tailwindcss.com';
+      document.head.appendChild(script);
+    }
+  }, []);
+
   const fetchData = async () => {
     try {
       const [resUsers, resExp, resTrips] = await Promise.all([
@@ -162,11 +173,15 @@ export default function App() {
             ? 'A viagem foi enviada para aprovação do Ricardo.' 
             : 'Viagem em fase de revisão (48h). Pode ainda editar as despesas.' 
         });
+        
         await fetchData();
-        const updatedTrips = await (await fetch(`${ENDPOINT_TRIPS}?id=eq.${tripId}`, { headers: HEADERS })).json();
-        if (updatedTrips.length > 0) setSelectedTrip(updatedTrips[0]);
-      } else {
-        alert("Erro ao concluir viagem. Verifique a ligação.");
+
+        // Atualiza a viagem selecionada para que o botão mude na hora
+        const updatedRes = await fetch(`${ENDPOINT_TRIPS}?id=eq.${tripId}`, { headers: HEADERS });
+        if (updatedRes.ok) {
+           const updatedTrips = await updatedRes.json();
+           if (updatedTrips.length > 0) setSelectedTrip(updatedTrips[0]);
+        }
       }
     } catch (err) {
       console.error(err);
@@ -283,11 +298,13 @@ export default function App() {
         } catch (e) {}
       }
       
-      const zipBlob = await zip.generateAsync({ type: "blob" });
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(zipBlob);
-      link.download = `Anexos_Kalenborn_${sellerName || 'GERAL'}_${month}.zip`;
-      link.click();
+      if (fileCount > 0 || approved.length > 0) {
+        const zipBlob = await zip.generateAsync({ type: "blob" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(zipBlob);
+        link.download = `Anexos_Kalenborn_${sellerName || 'GERAL'}_${month}.zip`;
+        link.click();
+      }
     } finally { setZippingState({ active: false, label: '' }); }
   };
 
@@ -381,7 +398,7 @@ function SellersIndividualView({ users, expenses, onViewAttachment, onEditExpens
       <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-4">
           <div className="bg-blue-100 p-3 rounded-2xl"><User className="text-blue-600" size={28}/></div>
-          <div><h2 className="font-black text-xl text-slate-800 tracking-tight">Vendedor Individual</h2><p className="text-slate-400 text-xs font-medium">Histórico completo de lançamentos.</p></div>
+          <div><h2 className="font-black text-xl text-slate-800 tracking-tight">Vendedor Individual</h2><p className="text-slate-400 text-xs font-medium">Histórico de lançamentos.</p></div>
         </div>
         <select className="p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 font-bold" value={selectedUserId} onChange={e => setSelectedUserId(e.target.value)}>
           <option value="">-- Escolher Vendedor --</option>
@@ -515,7 +532,7 @@ function TripDetailsView({ trip, expenses, getComputedTripStatus, onBack, onClos
   return (
     <div className="animate-in fade-in slide-in-from-right-4 duration-300 text-left">
       <button onClick={onBack} className="mb-6 flex items-center gap-2 text-xs font-black text-slate-500 uppercase bg-white px-5 py-3 rounded-2xl border border-slate-100 shadow-sm"><ArrowLeft size={16} /> Voltar</button>
-      <div className="bg-white p-6 sm:p-10 rounded-[40px] shadow-sm border border-slate-100 mb-6 flex flex-col md:flex-row justify-between gap-6">
+      <div className="bg-white p-6 sm:p-10 rounded-[40px] shadow-sm border border-slate-100 mb-6 flex flex-col md:flex-row justify-between gap-6 text-left">
         <div><h2 className="font-black text-2xl text-slate-800 leading-tight">{trip.client} - {new Date(trip.start_date).toLocaleDateString('pt-BR')}</h2><p className="text-slate-500 mb-4 mt-1 flex items-center gap-2 font-medium tracking-tight"><MapPin size={16}/> {trip.destination}</p><div className="flex gap-6"><div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">A Reembolsar</p><p className="font-black text-2xl text-green-600">R$ {totalRef.toFixed(2)}</p></div><div><p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mb-1">Cartão Empresa</p><p className="font-black text-2xl text-slate-400">R$ {totalCorp.toFixed(2)}</p></div></div></div>
         <div className="flex flex-col gap-3 min-w-[200px]">
           {status === 'Aberta' && <button onClick={() => onCloseTrip(trip.id, false)} disabled={loading || expenses.length === 0} className="bg-slate-900 text-white py-4 rounded-2xl font-black text-xs shadow-xl uppercase tracking-widest">Concluir Viagem</button>}
@@ -597,10 +614,10 @@ function ClosingDetails({ month, expenses, onExcel, onZip, zippingState }) {
       </div>
       <div className="bg-green-50 rounded-3xl p-6 mb-8 border border-green-100 flex items-center justify-between"><div><p className="text-[10px] font-black text-green-600/70 uppercase tracking-widest mb-1">Total a Reembolsar Equipa</p><div className="font-black text-4xl text-green-600 tabular-nums">R$ {totalGeral.toFixed(2)}</div></div><Wallet size={48} className="text-green-200"/></div>
       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Fecho Individual por Vendedor</p>
-      <div className="space-y-4">
+      <div className="space-y-4 text-left">
         {Object.entries(byUser).map(([name, data]) => (
           <div key={name} className="p-5 rounded-2xl bg-slate-50 border border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 hover:border-blue-200 transition-colors">
-            <div><div className="font-black text-lg text-slate-800">{name}</div><div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{data.count} Lançamentos Aprovados</div></div>
+            <div className="text-left"><div className="font-black text-lg text-slate-800">{name}</div><div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{data.count} Lançamentos Aprovados</div></div>
             <div className="flex gap-6 items-center text-right w-full sm:w-auto border-t sm:border-0 pt-3 sm:pt-0">
               <div className="hidden xs:block"><p className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Cartão Corp</p><p className="font-black text-sm text-slate-500">R$ {data.corp.toFixed(2)}</p></div>
               <div><p className="text-[9px] font-black text-green-600 uppercase">A Reembolsar</p><p className="font-black text-xl text-green-600">R$ {data.refund.toFixed(2)}</p></div>
@@ -617,14 +634,14 @@ function TeamManagement({ users, onAddUser, onDeleteUser, loading }) {
   const [form, setForm] = useState({ name: '', password: '', role: 'vendedor' });
   return (
     <div className="bg-white p-6 sm:p-10 rounded-[40px] shadow-sm border border-slate-100 text-left animate-in fade-in duration-300">
-      <div className="flex items-center gap-4 mb-8"><div className="bg-orange-100 p-3 rounded-2xl"><Users className="text-orange-600" size={28}/></div><h2 className="font-black text-xl sm:text-2xl text-slate-800 tracking-tight">Equipa</h2></div>
+      <div className="flex items-center gap-4 mb-8 text-left"><div className="bg-orange-100 p-3 rounded-2xl"><Users className="text-orange-600" size={28}/></div><h2 className="font-black text-xl sm:text-2xl text-slate-800 tracking-tight">Equipa</h2></div>
       <form onSubmit={(e)=>{e.preventDefault(); onAddUser(form); setForm({name:'', password:'', role:'vendedor'});}} className="bg-slate-50 p-6 rounded-3xl border border-slate-200 mb-8 grid grid-cols-1 md:grid-cols-4 gap-4 items-end text-left">
         <div className="text-left"><label className="text-[9px] font-black uppercase text-slate-400 block ml-2 mb-1">Nome</label><input type="text" className="w-full p-4 rounded-2xl border border-slate-200 outline-none text-sm" value={form.name} onChange={e=>setForm({...form, name:e.target.value})} required /></div>
         <div className="text-left"><label className="text-[9px] font-black uppercase text-slate-400 block ml-2 mb-1">Senha</label><input type="text" className="w-full p-4 rounded-2xl border border-slate-200 outline-none text-sm" value={form.password} onChange={e=>setForm({...form, password:e.target.value})} required /></div>
         <div className="text-left"><label className="text-[9px] font-black uppercase text-slate-400 block ml-2 mb-1">Função</label><select className="w-full p-4 rounded-2xl border border-slate-200 outline-none text-sm" value={form.role} onChange={e=>setForm({...form, role:e.target.value})}><option value="vendedor">Vendedor</option><option value="gestor">Gestor</option></select></div>
-        <button disabled={loading} className="bg-orange-600 text-white p-4 rounded-2xl font-black text-sm uppercase tracking-widest"><UserPlus size={18} className="inline mr-2"/> ADICIONAR</button>
+        <button disabled={loading} className="bg-orange-600 text-white p-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-lg shadow-orange-100"><UserPlus size={18} className="inline mr-2"/> ADICIONAR</button>
       </form>
-      <div className="divide-y divide-slate-100 text-left">{users.map(u => (<div key={u.id} className="p-4 flex justify-between items-center hover:bg-slate-50 transition-colors"><div><div className="font-black text-slate-800">{u.name}</div><div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{u.role}</div></div><button onClick={()=>onDeleteUser(u.id)} disabled={u.role==='gestor'} className="p-3 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={20}/></button></div>))}</div>
+      <div className="divide-y divide-slate-100 text-left">{users.map(u => (<div key={u.id} className="p-4 flex justify-between items-center hover:bg-slate-50 transition-colors text-left"><div><div className="font-black text-slate-800">{u.name}</div><div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{u.role}</div></div><button onClick={()=>onDeleteUser(u.id)} disabled={u.role==='gestor'} className="p-3 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={20}/></button></div>))}</div>
     </div>
   );
 }
@@ -648,7 +665,7 @@ function EditExpenseModal({ expense, trips, onSave, onClose, loading }) {
           <div className="sm:col-span-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Viagem</label><select className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl" value={form.tripId} onChange={e=>setForm({...form, tripId: e.target.value})}><option value="">-- Sem Viagem --</option>{trips.map(t => <option key={t.id} value={t.id}>{t.client} - {new Date(t.start_date).toLocaleDateString('pt-BR')}</option>)}</select></div>
           <div className="text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Data</label><input type="date" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl" value={form.date} onChange={e=>setForm({...form, date: e.target.value})} /></div>
           <div className="text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Valor (R$)</label><input type="number" step="0.01" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" value={form.amount} onChange={e=>setForm({...form, amount: e.target.value})} /></div>
-          <div className="sm:col-span-2 flex items-center gap-3 mt-4"><input type="checkbox" checked={form.isRefundable} onChange={e=>setForm({...form, isRefundable: e.target.checked})} className="w-6 h-6 rounded-lg accent-green-600 shadow-sm"/><label className="font-black text-sm text-slate-700">Gasto Reembolsável (Dinheiro Próprio)</label></div>
+          <div className="sm:col-span-2 flex items-center gap-3 mt-4 text-left"><input type="checkbox" checked={form.isRefundable} onChange={e=>setForm({...form, isRefundable: e.target.checked})} className="w-6 h-6 rounded-lg accent-green-600 shadow-sm"/><label className="font-black text-sm text-slate-700">Gasto Reembolsável (Dinheiro Próprio)</label></div>
         </div>
         <div className="flex justify-end gap-4 pt-6 border-t"><button onClick={onClose} className="px-8 py-4 rounded-2xl font-black uppercase text-xs text-slate-400 hover:bg-slate-100 transition-all">Cancelar</button><button onClick={() => onSave(expense.id, form)} disabled={loading} className="bg-blue-600 text-white px-10 py-4 rounded-2xl font-black uppercase text-xs shadow-xl tracking-widest hover:bg-blue-700 transition-all">GUARDAR</button></div>
       </div>
@@ -676,7 +693,7 @@ function AttachmentModal({ fileData, onClose }) {
   const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${fileData.userId}/${fileData.name}`;
   const isImage = publicUrl.toLowerCase().match(/\.(jpg|jpeg|png|webp|avif|gif)$/);
   return (
-    <div className="fixed inset-0 bg-slate-900/95 flex items-center justify-center p-4 z-50 backdrop-blur-xl">
+    <div className="fixed inset-0 bg-slate-900/95 flex items-center justify-center p-4 z-50 backdrop-blur-xl text-center">
       <div className="bg-white rounded-[50px] max-w-4xl w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl border border-white/20 animate-in zoom-in-95 duration-300">
         <div className="flex justify-between items-center p-8 border-b"><h3 className="font-black text-2xl text-slate-800 flex items-center gap-3"><Eye size={24} className="text-blue-600"/> Comprovativo</h3><button onClick={onClose} className="p-3 bg-slate-50 hover:bg-slate-100 rounded-full transition-all"><X size={24} className="text-slate-500"/></button></div>
         <div className="flex-1 overflow-auto p-10 bg-slate-50 flex items-center justify-center text-center">
@@ -690,7 +707,7 @@ function AttachmentModal({ fileData, onClose }) {
 
 function MessageModal({ msg, onClose }) {
   return (
-    <div className="fixed inset-0 bg-slate-900/95 flex items-center justify-center p-4 z-50 backdrop-blur-2xl">
+    <div className="fixed inset-0 bg-slate-900/95 flex items-center justify-center p-4 z-50 backdrop-blur-2xl text-center">
       <div className="bg-white rounded-[50px] max-w-sm w-full p-12 text-center shadow-2xl border border-white/10 animate-in zoom-in-75 duration-300">
         <div className="bg-green-100 w-24 h-24 rounded-[32px] flex items-center justify-center mx-auto mb-10 shadow-inner"><CheckCircle size={48} className="text-green-600" /></div>
         <h3 className="font-black text-3xl text-slate-800 mb-4 tracking-tighter text-center">{msg.title}</h3>
