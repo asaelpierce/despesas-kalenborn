@@ -163,9 +163,10 @@ export default function App() {
             : 'Viagem em fase de revisão (48h). Pode ainda editar as despesas.' 
         });
         await fetchData();
-        // Atualiza a viagem selecionada localmente
-        const { data } = await (await fetch(`${ENDPOINT_TRIPS}?id=eq.${tripId}`, { headers: HEADERS })).json();
-        if (data && data.length > 0) setSelectedTrip(data[0]);
+        const updatedTrips = await (await fetch(`${ENDPOINT_TRIPS}?id=eq.${tripId}`, { headers: HEADERS })).json();
+        if (updatedTrips.length > 0) setSelectedTrip(updatedTrips[0]);
+      } else {
+        alert("Erro ao concluir viagem. Verifique a ligação.");
       }
     } catch (err) {
       console.error(err);
@@ -245,11 +246,11 @@ export default function App() {
 
   const handleDownloadExcel = (month) => {
     const approved = expenses.filter(e => e.month === month && (e.status === 'Aprovado' || e.status === 'Fechado'));
-    if (approved.length === 0) return alert("Sem despesas aprovadas.");
+    if (approved.length === 0) return alert("Não existem despesas aprovadas neste mês.");
     const blob = generateExcelBlob(approved);
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `Relatorio_Kalenborn_${month}.csv`;
+    link.download = `Relatorio_Kalenborn_GERAL_${month}.csv`;
     link.click();
   };
 
@@ -257,12 +258,15 @@ export default function App() {
     let approved = expenses.filter(e => e.month === month && (e.status === 'Aprovado' || e.status === 'Fechado'));
     if (sellerName) approved = approved.filter(e => e.userName === sellerName);
     if (approved.length === 0) return alert("Sem anexos aprovados.");
+    
     setZippingState({ active: true, label: sellerName || 'GERAL' });
     try {
       const JSZip = (await import('https://esm.sh/jszip@3.10.1')).default;
       const zip = new JSZip();
+      
       const excelBlob = generateExcelBlob(approved);
       zip.file(`Relatorio_${sellerName || 'Geral'}_${month}.csv`, excelBlob);
+
       let fileCount = 0;
       for (const exp of approved) {
         if (!exp.receiptName) continue;
@@ -273,18 +277,17 @@ export default function App() {
             const blob = await res.blob();
             const ext = exp.receiptName.split('.').pop() || 'pdf';
             const cleanName = `${exp.userName}_${exp.date}_R$${exp.amount}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
-            zip.file(`anexos/${cleanName}.${ext}`, blob);
+            zip.file(`comprovativos/${cleanName}.${ext}`, blob);
             fileCount++;
           }
         } catch (e) {}
       }
-      if (fileCount > 0 || approved.length > 0) {
-        const zipBlob = await zip.generateAsync({ type: "blob" });
-        const link = document.createElement("a");
-        link.href = URL.createObjectURL(zipBlob);
-        link.download = `Anexos_Kalenborn_${sellerName || 'GERAL'}_${month}.zip`;
-        link.click();
-      }
+      
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(zipBlob);
+      link.download = `Anexos_Kalenborn_${sellerName || 'GERAL'}_${month}.zip`;
+      link.click();
     } finally { setZippingState({ active: false, label: '' }); }
   };
 
@@ -326,8 +329,8 @@ export default function App() {
               <div className="space-y-2">
                 <NavBtn active={activeTab === 'aprovacoes'} onClick={() => {setActiveTab('aprovacoes'); setIsMobileMenuOpen(false);}} icon={<CheckCircle size={18}/>} label="Aprovações" badge={expensesForManager.length} />
                 <NavBtn active={activeTab === 'historico_vendedores'} onClick={() => {setActiveTab('historico_vendedores'); setIsMobileMenuOpen(false);}} icon={<History size={18}/>} label="Vendedores" />
-                <NavBtn active={activeTab === 'fechamento'} onClick={() => {setActiveTab('fechamento'); setIsMobileMenuOpen(false);}} icon={<BarChart3 size={18}/>} label="Fechamento" />
-                <NavBtn active={activeTab === 'equipa'} onClick={() => {setActiveTab('equipa'); setIsMobileMenuOpen(false);}} icon={<Users size={18}/>} label="Equipa" />
+                <NavBtn active={activeTab === 'fechamento'} onClick={() => {setActiveTab('fechamento'); setIsMobileMenuOpen(false);}} icon={<BarChart3 size={18}/>} label="Fechamento Mensal" />
+                <NavBtn active={activeTab === 'equipa'} onClick={() => {setActiveTab('equipa'); setIsMobileMenuOpen(false);}} icon={<Users size={18}/>} label="Gerir Equipa" />
               </div>
             </div>
           )}
@@ -378,7 +381,7 @@ function SellersIndividualView({ users, expenses, onViewAttachment, onEditExpens
       <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-4">
           <div className="bg-blue-100 p-3 rounded-2xl"><User className="text-blue-600" size={28}/></div>
-          <div><h2 className="font-black text-xl text-slate-800 tracking-tight">Vendedor Individual</h2><p className="text-slate-400 text-xs font-medium">Histórico de lançamentos.</p></div>
+          <div><h2 className="font-black text-xl text-slate-800 tracking-tight">Vendedor Individual</h2><p className="text-slate-400 text-xs font-medium">Histórico completo de lançamentos.</p></div>
         </div>
         <select className="p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 font-bold" value={selectedUserId} onChange={e => setSelectedUserId(e.target.value)}>
           <option value="">-- Escolher Vendedor --</option>
@@ -426,7 +429,7 @@ function TripForm({ onSubmit, loading }) {
   const [form, setForm] = useState({ client: '', destination: '', startDate: '', endDate: '' });
   return (
     <form onSubmit={(e) => { e.preventDefault(); onSubmit(form); }} className="bg-white p-6 sm:p-10 rounded-[40px] shadow-sm border border-slate-100 space-y-6 text-left animate-in fade-in slide-in-from-bottom-4 duration-300">
-      <div className="border-b pb-4 flex items-center gap-3"><Briefcase className="text-blue-500" size={28}/><h2 className="font-black text-xl sm:text-2xl text-slate-800 tracking-tight">Nova Viagem</h2></div>
+      <div className="border-b pb-4 flex items-center gap-3"><Briefcase className="text-blue-500" size={28}/><h2 className="font-black text-xl sm:text-2xl text-slate-800 tracking-tight">Criar Viagem</h2></div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div className="space-y-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Cliente</label><input type="text" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.client} onChange={e => setForm({...form, client: e.target.value})} required /></div>
         <div className="space-y-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Destino (Cidade)</label><input type="text" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.destination} onChange={e => setForm({...form, destination: e.target.value})} required /></div>
