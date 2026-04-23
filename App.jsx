@@ -4,7 +4,7 @@ import {
   Upload, AlertCircle, BarChart3, LogOut, User, Calendar, 
   DollarSign, MapPin, Lock, X, Eye, ExternalLink, Download, Archive, Menu,
   Edit3, Trash2, Users, UserPlus, AlertTriangle, Plane, Briefcase, ArrowLeft,
-  CreditCard, Wallet, Search, History
+  CreditCard, Wallet, Search, History, Save
 } from 'lucide-react';
 
 // --- CONFIGURAÇÃO DO SUPABASE (REST API) ---
@@ -43,6 +43,14 @@ const STATUS_COLORS = {
   'Fechado': 'bg-purple-100 text-purple-800 border-purple-200',
 };
 
+// --- FUNÇÃO AUXILIAR PARA CORRIGIR DATAS (Evita o erro de 1 dia a menos) ---
+const formatDateDisplay = (dateString) => {
+  if (!dateString) return "";
+  // Resolve o problema de fuso horário separando os componentes da data
+  const [year, month, day] = dateString.split('-');
+  return `${day}/${month}/${year}`;
+};
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [users, setUsers] = useState([]);
@@ -59,18 +67,8 @@ export default function App() {
   const [zippingState, setZippingState] = useState({ active: false, label: '' });
   
   const [expenseToEdit, setExpenseToEdit] = useState(null);
+  const [tripToEdit, setTripToEdit] = useState(null);
   const [itemToDelete, setItemToDelete] = useState(null); 
-
-  // --- EFEITO DE SEGURANÇA PARA CARREGAR ESTILOS ---
-  useEffect(() => {
-    // Garante que o Tailwind CSS seja carregado se o index.html falhar
-    if (!document.getElementById('tailwind-script')) {
-      const script = document.createElement('script');
-      script.id = 'tailwind-script';
-      script.src = 'https://cdn.tailwindcss.com';
-      document.head.appendChild(script);
-    }
-  }, []);
 
   const fetchData = async () => {
     try {
@@ -145,49 +143,37 @@ export default function App() {
         headers: { ...HEADERS, 'Prefer': 'return=minimal' },
         body: JSON.stringify(payload)
       });
-      if (res.ok) { 
-        fetchData(); 
-        setActiveTab('viagens'); 
-        setSystemMessage({ title: 'Sucesso', text: 'Viagem criada com sucesso!' }); 
+      if (res.ok) { fetchData(); setActiveTab('viagens'); setSystemMessage({ title: 'Sucesso', text: 'Viagem criada!' }); }
+    } finally { setIsLoading(false); }
+  };
+
+  const handleEditTripSave = async (id, updatedData) => {
+    setIsLoading(true);
+    try {
+      await fetch(`${ENDPOINT_TRIPS}?id=eq.${id}`, {
+        method: 'PATCH',
+        headers: HEADERS,
+        body: JSON.stringify(updatedData)
+      });
+      setSystemMessage({ title: 'Atualizado!', text: 'Dados da viagem atualizados com sucesso.' });
+      setTripToEdit(null);
+      await fetchData();
+      if (selectedTrip && selectedTrip.id === id) {
+        const res = await fetch(`${ENDPOINT_TRIPS}?id=eq.${id}`, { headers: HEADERS });
+        const data = await res.json();
+        if (data && data.length > 0) setSelectedTrip(data[0]);
       }
     } finally { setIsLoading(false); }
   };
 
   const handleCloseTrip = async (tripId, forceSend = false) => {
     setIsLoading(true);
-    try {
-      const payload = forceSend 
-        ? { status: 'Enviada', closed_at: new Date().toISOString() }
-        : { status: 'Em Revisão', closed_at: new Date().toISOString() };
-
-      const res = await fetch(`${ENDPOINT_TRIPS}?id=eq.${tripId}`, { 
-        method: 'PATCH', 
-        headers: HEADERS, 
-        body: JSON.stringify(payload) 
-      });
-
-      if (res.ok) {
-        setSystemMessage({ 
-          title: forceSend ? 'Enviada!' : 'Viagem Concluída', 
-          text: forceSend 
-            ? 'A viagem foi enviada para aprovação do Ricardo.' 
-            : 'Viagem em fase de revisão (48h). Pode ainda editar as despesas.' 
-        });
-        
-        await fetchData();
-
-        // Atualiza a viagem selecionada para que o botão mude na hora
-        const updatedRes = await fetch(`${ENDPOINT_TRIPS}?id=eq.${tripId}`, { headers: HEADERS });
-        if (updatedRes.ok) {
-           const updatedTrips = await updatedRes.json();
-           if (updatedTrips.length > 0) setSelectedTrip(updatedTrips[0]);
-        }
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsLoading(false);
-    }
+    const payload = forceSend 
+      ? { status: 'Enviada', closed_at: new Date().toISOString() }
+      : { status: 'Em Revisão', closed_at: new Date().toISOString() };
+    await fetch(`${ENDPOINT_TRIPS}?id=eq.${tripId}`, { method: 'PATCH', headers: HEADERS, body: JSON.stringify(payload) });
+    fetchData();
+    setIsLoading(false);
   };
 
   const handleAddExpense = async (formData, file) => {
@@ -251,10 +237,16 @@ export default function App() {
   };
 
   const generateExcelBlob = (list) => {
-    const headers = ['Vendedor', 'Data', 'Categoria', 'Valor (R$)', 'Reembolsável?', 'Descrição', 'Link'];
+    const headers = ['Vendedor', 'Data', 'Viagem / Cliente', 'Categoria', 'Valor (R$)', 'Reembolsável?', 'Descrição', 'Link'];
     const csvRows = list.map(exp => {
+      const trip = trips.find(t => t.id === exp.tripId);
+      const tripInfo = trip ? `${trip.client} (${trip.destination})` : 'Lançamento Avulso';
       const url = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${exp.userId}/${exp.receiptName}`;
-      return [`"${exp.userName}"`, `"${new Date(exp.date).toLocaleDateString('pt-BR')}"`, `"${exp.category}"`, `"${parseFloat(exp.amount).toFixed(2).replace('.', ',')}"`, `"${exp.isRefundable ? 'SIM' : 'NÃO'}"`, `"${exp.description}"`, `"${url}"`].join(';');
+      return [
+        `"${exp.userName}"`, `"${formatDateDisplay(exp.date)}"`, `"${tripInfo}"`, `"${exp.category}"`,
+        `"${parseFloat(exp.amount).toFixed(2).replace('.', ',')}"`, `"${exp.isRefundable ? 'SIM' : 'NÃO'}"`,
+        `"${exp.description}"`, `"${url}"`
+      ].join(';');
     });
     return new Blob(["\uFEFF" + headers.join(';') + '\n' + csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
   };
@@ -265,7 +257,7 @@ export default function App() {
     const blob = generateExcelBlob(approved);
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `Relatorio_Kalenborn_GERAL_${month}.csv`;
+    link.download = `Relatorio_Kalenborn_${month}.csv`;
     link.click();
   };
 
@@ -273,15 +265,12 @@ export default function App() {
     let approved = expenses.filter(e => e.month === month && (e.status === 'Aprovado' || e.status === 'Fechado'));
     if (sellerName) approved = approved.filter(e => e.userName === sellerName);
     if (approved.length === 0) return alert("Sem anexos aprovados.");
-    
     setZippingState({ active: true, label: sellerName || 'GERAL' });
     try {
       const JSZip = (await import('https://esm.sh/jszip@3.10.1')).default;
       const zip = new JSZip();
-      
       const excelBlob = generateExcelBlob(approved);
       zip.file(`Relatorio_${sellerName || 'Geral'}_${month}.csv`, excelBlob);
-
       let fileCount = 0;
       for (const exp of approved) {
         if (!exp.receiptName) continue;
@@ -297,7 +286,6 @@ export default function App() {
           }
         } catch (e) {}
       }
-      
       if (fileCount > 0 || approved.length > 0) {
         const zipBlob = await zip.generateAsync({ type: "blob" });
         const link = document.createElement("a");
@@ -341,8 +329,8 @@ export default function App() {
           <NavBtn active={activeTab === 'viagens'} onClick={() => {setActiveTab('viagens'); setIsMobileMenuOpen(false);}} icon={<Plane size={18}/>} label="Minhas Viagens" />
           <NavBtn active={activeTab === 'minhas_despesas'} onClick={() => {setActiveTab('minhas_despesas'); setIsMobileMenuOpen(false);}} icon={<FileText size={18}/>} label="Minhas Despesas" />
           {currentUser.role === 'gestor' && (
-            <div className="pt-4 md:pt-6 border-t border-slate-200 mt-4 text-left">
-              <div className="pb-2 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest">Gestão</div>
+            <div className="pt-4 md:pt-6 border-t border-slate-200 mt-4">
+              <div className="pb-2 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-left">Gestor</div>
               <div className="space-y-2">
                 <NavBtn active={activeTab === 'aprovacoes'} onClick={() => {setActiveTab('aprovacoes'); setIsMobileMenuOpen(false);}} icon={<CheckCircle size={18}/>} label="Aprovações" badge={expensesForManager.length} />
                 <NavBtn active={activeTab === 'historico_vendedores'} onClick={() => {setActiveTab('historico_vendedores'); setIsMobileMenuOpen(false);}} icon={<History size={18}/>} label="Vendedores" />
@@ -356,15 +344,32 @@ export default function App() {
         <div className="md:col-span-3 text-left">
           {activeTab === 'nova_viagem' && <TripForm onSubmit={handleAddTrip} loading={isLoading} />}
           {activeTab === 'nova' && <ExpenseForm onSubmit={handleAddExpense} trips={trips.filter(t => t.userId === currentUser.id && getComputedTripStatus(t) !== 'Enviada')} loading={isLoading} />}
-          {activeTab === 'minhas_despesas' && <ExpenseList data={expenses.filter(e => e.userId === currentUser.id)} isGestor={false} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} title="Minhas Despesas" />}
-          {activeTab === 'aprovacoes' && <ExpenseList data={expensesForManager} isGestor={true} onUpdateStatus={handleUpdateStatus} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} showAll title="Aguardando Aprovação" />}
+          {activeTab === 'minhas_despesas' && <ExpenseList data={expenses.filter(e => e.userId === currentUser.id)} isGestor={false} trips={trips} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} title="Minhas Despesas" />}
+          {activeTab === 'aprovacoes' && <ExpenseList data={expensesForManager} isGestor={true} trips={trips} onUpdateStatus={handleUpdateStatus} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} showAll title="Aguardando Aprovação" />}
           {activeTab === 'viagens' && <TripsList trips={trips.filter(t => t.userId === currentUser.id)} expenses={expenses} getComputedTripStatus={getComputedTripStatus} onViewTrip={(trip) => { setSelectedTrip(trip); setActiveTab('detalhes_viagem'); }} />}
-          {activeTab === 'detalhes_viagem' && selectedTrip && <TripDetailsView trip={selectedTrip} expenses={expenses.filter(e => e.tripId === selectedTrip.id)} getComputedTripStatus={getComputedTripStatus} onBack={() => setActiveTab('viagens')} onCloseTrip={handleCloseTrip} onDeleteTrip={() => setItemToDelete({ type: 'trip', id: selectedTrip.id })} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} loading={isLoading} />}
+          
+          {activeTab === 'detalhes_viagem' && selectedTrip && (
+            <TripDetailsView 
+              trip={selectedTrip} 
+              expenses={expenses.filter(e => e.tripId === selectedTrip.id)} 
+              getComputedTripStatus={getComputedTripStatus} 
+              currentUser={currentUser}
+              onBack={() => setActiveTab('viagens')} 
+              onCloseTrip={handleCloseTrip} 
+              onDeleteTrip={() => setItemToDelete({ type: 'trip', id: selectedTrip.id })} 
+              onEditTrip={(t) => setTripToEdit(t)}
+              onViewAttachment={setAttachmentToView} 
+              onEditExpense={setExpenseToEdit} 
+              onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} 
+              loading={isLoading} 
+            />
+          )}
           
           {activeTab === 'historico_vendedores' && (
             <SellersIndividualView 
                users={users.filter(u => u.role === 'vendedor')} 
                expenses={expenses} 
+               trips={trips}
                onViewAttachment={setAttachmentToView}
                onEditExpense={setExpenseToEdit}
                onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })}
@@ -372,13 +377,14 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'fechamento' && <MonthlyClosing expenses={expenses} onDownloadExcel={handleDownloadExcel} onDownloadZip={handleDownloadZip} zippingState={zippingState} />}
+          {activeTab === 'fechamento' && <MonthlyClosing expenses={expenses} trips={trips} onDownloadExcel={handleDownloadExcel} onDownloadZip={handleDownloadZip} zippingState={zippingState} />}
           {activeTab === 'equipa' && <TeamManagement users={users} onAddUser={handleAddUser} onDeleteUser={(id) => setItemToDelete({ type: 'user', id })} loading={isLoading} />}
         </div>
       </div>
 
       {attachmentToView && <AttachmentModal fileData={attachmentToView} onClose={() => setAttachmentToView(null)} />}
       {expenseToEdit && <EditExpenseModal expense={expenseToEdit} trips={trips.filter(t => t.userId === expenseToEdit.userId)} onSave={handleEditExpenseSave} onClose={() => setExpenseToEdit(null)} loading={isLoading} />}
+      {tripToEdit && <EditTripModal trip={tripToEdit} onSave={handleEditTripSave} onClose={() => setTripToEdit(null)} loading={isLoading} />}
       {itemToDelete && <ConfirmModal item={itemToDelete} onConfirm={executeDeletion} onClose={() => setItemToDelete(null)} loading={isLoading} />}
       {systemMessage && <MessageModal msg={systemMessage} onClose={() => setSystemMessage(null)} />}
     </div>
@@ -387,7 +393,7 @@ export default function App() {
 
 // --- SUB-COMPONENTES ---
 
-function SellersIndividualView({ users, expenses, onViewAttachment, onEditExpense, onDeleteExpense, onUpdateStatus }) {
+function SellersIndividualView({ users, expenses, trips, onViewAttachment, onEditExpense, onDeleteExpense, onUpdateStatus }) {
   const [selectedUserId, setSelectedUserId] = useState('');
   const sellerExpenses = expenses.filter(e => e.userId === selectedUserId);
   const totalRef = sellerExpenses.filter(e => e.isRefundable && e.status !== 'Reprovado').reduce((acc, e) => acc + parseFloat(e.amount), 0);
@@ -396,9 +402,9 @@ function SellersIndividualView({ users, expenses, onViewAttachment, onEditExpens
   return (
     <div className="space-y-6 text-left animate-in fade-in duration-300">
       <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 text-left">
           <div className="bg-blue-100 p-3 rounded-2xl"><User className="text-blue-600" size={28}/></div>
-          <div><h2 className="font-black text-xl text-slate-800 tracking-tight">Vendedor Individual</h2><p className="text-slate-400 text-xs font-medium">Histórico de lançamentos.</p></div>
+          <div><h2 className="font-black text-xl text-slate-800 tracking-tight">Vendedor Individual</h2><p className="text-slate-400 text-xs font-medium">Análise detalhada por colaborador.</p></div>
         </div>
         <select className="p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 font-bold" value={selectedUserId} onChange={e => setSelectedUserId(e.target.value)}>
           <option value="">-- Escolher Vendedor --</option>
@@ -410,13 +416,111 @@ function SellersIndividualView({ users, expenses, onViewAttachment, onEditExpens
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="bg-green-50 p-6 rounded-3xl border border-green-100 flex items-center justify-between"><div><p className="text-[10px] font-black text-green-600 uppercase mb-1">Total Reembolsável</p><div className="font-black text-3xl text-green-600">R$ {totalRef.toFixed(2)}</div></div><Wallet size={32} className="text-green-200"/></div>
-            <div className="bg-slate-100 p-6 rounded-3xl border border-slate-200 flex items-center justify-between"><div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Total Cartão Empresa</p><div className="font-black text-3xl text-slate-500">R$ {totalCorp.toFixed(2)}</div></div><CreditCard size={32} className="text-slate-300"/></div>
+            <div className="bg-slate-100 p-6 rounded-3xl border border-slate-200 flex items-center justify-between"><div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">Total Cartão Corp</p><div className="font-black text-3xl text-slate-500">R$ {totalCorp.toFixed(2)}</div></div><CreditCard size={32} className="text-slate-300"/></div>
           </div>
-          <ExpenseList data={sellerExpenses} isGestor={true} onViewAttachment={onViewAttachment} onEditExpense={onEditExpense} onDeleteExpense={onDeleteExpense} onUpdateStatus={onUpdateStatus} title="Histórico" />
+          <ExpenseList data={sellerExpenses} trips={trips} isGestor={true} onViewAttachment={onViewAttachment} onEditExpense={onEditExpense} onDeleteExpense={onDeleteExpense} onUpdateStatus={onUpdateStatus} title="Histórico de Lançamentos" />
         </>
       ) : (
         <div className="bg-white p-20 rounded-[40px] border border-dashed border-slate-200 flex flex-col items-center justify-center text-slate-300 uppercase font-black text-xs tracking-widest"><Search size={48} className="mb-4 opacity-20"/> Selecione um vendedor acima</div>
       )}
+    </div>
+  );
+}
+
+function TripDetailsView({ trip, expenses, getComputedTripStatus, currentUser, onBack, onCloseTrip, onDeleteTrip, onEditTrip, onViewAttachment, onEditExpense, onDeleteExpense, loading }) {
+  const status = getComputedTripStatus(trip);
+  const isEditable = status === 'Aberta' || status === 'Em Revisão';
+  const isOwner = trip.userId === currentUser.id;
+  const isGestor = currentUser.role === 'gestor';
+
+  const canEditTripDetails = isGestor || (isOwner && isEditable);
+
+  const totalRef = expenses.filter(e => e.isRefundable).reduce((acc, e) => acc + parseFloat(e.amount), 0);
+  const totalCorp = expenses.filter(e => !e.isRefundable).reduce((acc, e) => acc + parseFloat(e.amount), 0);
+
+  return (
+    <div className="animate-in fade-in slide-in-from-right-4 duration-300 text-left">
+      <div className="flex justify-between items-center mb-6">
+        <button onClick={onBack} className="flex items-center gap-2 text-xs font-black text-slate-500 uppercase bg-white px-5 py-3 rounded-2xl border border-slate-100 shadow-sm transition-all hover:bg-slate-50"><ArrowLeft size={16} /> Voltar</button>
+        {canEditTripDetails && (
+          <button onClick={() => onEditTrip(trip)} className="flex items-center gap-2 text-xs font-black text-blue-600 uppercase bg-blue-50 px-5 py-3 rounded-2xl border border-blue-100 hover:bg-blue-100 transition-colors shadow-sm"><Edit3 size={16} /> Editar Viagem</button>
+        )}
+      </div>
+      <div className="bg-white p-6 sm:p-10 rounded-[40px] shadow-sm border border-slate-100 mb-6 flex flex-col md:flex-row justify-between gap-6 text-left">
+        <div className="text-left">
+          <h2 className="font-black text-2xl text-slate-800 leading-tight">{trip.client}</h2>
+          <div className="text-[10px] text-slate-400 font-black uppercase mt-2 flex items-center gap-3">
+             <span className="flex items-center gap-1"><Calendar size={12}/> {formatDateDisplay(trip.start_date)} - {formatDateDisplay(trip.end_date)}</span>
+             <span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded border border-blue-200">{status}</span>
+          </div>
+          <p className="text-slate-500 mb-6 mt-3 flex items-center gap-2 font-medium tracking-tight"><MapPin size={16}/> {trip.destination}</p>
+          <div className="flex gap-6 text-left">
+            <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">A Reembolsar</p><p className="font-black text-2xl text-green-600">R$ {totalRef.toFixed(2)}</p></div>
+            <div><p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mb-1">Cartão Empresa</p><p className="font-black text-2xl text-slate-400">R$ {totalCorp.toFixed(2)}</p></div>
+          </div>
+        </div>
+        <div className="flex flex-col gap-3 min-w-[200px]">
+          {isOwner && status === 'Aberta' && <button onClick={() => onCloseTrip(trip.id, false)} disabled={loading || expenses.length === 0} className="bg-slate-900 text-white py-4 rounded-2xl font-black text-xs shadow-xl uppercase tracking-widest transition-all hover:bg-slate-800">Concluir Viagem</button>}
+          {isOwner && status === 'Em Revisão' && <button onClick={() => onCloseTrip(trip.id, true)} disabled={loading} className="bg-blue-600 text-white py-4 rounded-2xl font-black text-xs shadow-xl uppercase tracking-widest transition-all hover:bg-blue-700">Enviar Agora</button>}
+          {(isGestor || (isOwner && status === 'Aberta')) && expenses.length === 0 && <button onClick={onDeleteTrip} disabled={loading} className="w-full bg-red-50 text-red-600 py-3 rounded-2xl font-black text-xs uppercase flex justify-center items-center gap-2 border border-red-100 transition-colors hover:bg-red-100"><Trash2 size={16}/> Excluir</button>}
+        </div>
+      </div>
+      <ExpenseList data={expenses} isGestor={isGestor} trips={[trip]} onViewAttachment={onViewAttachment} onEditExpense={isEditable ? onEditExpense : null} onDeleteExpense={isEditable ? onDeleteExpense : null} title="Despesas Registadas" hideTripBadge />
+    </div>
+  );
+}
+
+function ExpenseList({ data, isGestor, trips = [], onUpdateStatus, onViewAttachment, onEditExpense, onDeleteExpense, showAll, title, hideTripBadge }) {
+  return (
+    <div className="bg-white rounded-3xl border border-slate-100 overflow-hidden text-left shadow-sm">
+      <div className="p-6 border-b flex justify-between items-center bg-white"><h2 className="font-black text-lg text-slate-800 tracking-tight">{title}</h2><span className="text-xs font-black text-slate-400 bg-slate-100 px-3 py-1 rounded-lg">{data.length}</span></div>
+      <div className="divide-y divide-slate-100">
+        {data.length === 0 ? <div className="p-10 text-center text-slate-300 italic uppercase text-[10px] font-black tracking-widest">Nenhum registo encontrado</div> : data.map(exp => {
+          const trip = trips.find(t => t.id === exp.tripId);
+          return (
+          <div key={exp.id} className="p-5 flex flex-col lg:flex-row lg:justify-between lg:items-center gap-4 hover:bg-slate-50 transition-all group">
+            <div className="flex-1 text-left">
+              {showAll && <div className="font-black text-blue-600 text-[10px] mb-1 uppercase tracking-widest">{exp.userName}</div>}
+              <div className="flex items-center gap-2 text-slate-800 font-bold">{formatDateDisplay(exp.date)} <span className="text-[10px] text-slate-400 uppercase font-black px-2 border rounded-md border-slate-200">{exp.category}</span></div>
+              <div className="text-xs text-slate-500 mt-1 line-clamp-1 italic">{exp.description}</div>
+              <div className="flex flex-wrap gap-2 items-center mt-2">
+                {!hideTripBadge && trip && <div className="text-[9px] font-black text-blue-600 uppercase bg-blue-50 px-2 py-0.5 rounded border border-blue-100">Cliente: {trip.client}</div>}
+                {!trip && !hideTripBadge && <div className="text-[9px] font-black text-slate-400 uppercase bg-slate-100 px-2 py-0.5 rounded border border-slate-200">Avulso</div>}
+                {!exp.isRefundable && <div className="inline-block bg-slate-100 text-slate-500 text-[8px] px-1.5 py-0.5 rounded font-black uppercase">Cartão Empresa</div>}
+              </div>
+            </div>
+            <div className="flex items-center justify-between lg:justify-end gap-6 border-t lg:border-0 pt-3 lg:pt-0">
+               <div className="text-right"><div className={`font-black text-xl tabular-nums ${exp.isRefundable ? 'text-slate-900' : 'text-slate-400 line-through decoration-slate-300'}`}>R$ {parseFloat(exp.amount).toFixed(2)}</div><div className={`text-[9px] font-black uppercase mt-1 ${exp.status === 'Enviado' ? 'text-blue-500' : 'text-green-600'}`}>{exp.status}</div></div>
+               <div className="flex gap-2">
+                 <button onClick={() => onViewAttachment({ name: exp.receiptName, userId: exp.userId })} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Eye size={20}/></button>
+                 {onEditExpense && <button onClick={() => onEditExpense(exp)} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Edit3 size={20}/></button>}
+                 {isGestor && exp.status === 'Enviado' && <button onClick={() => onUpdateStatus(exp.id, 'Aprovado')} className="p-3 bg-green-500 rounded-2xl text-white shadow-lg shadow-green-100 transition-all active:scale-95"><CheckCircle size={20}/></button>}
+                 <button onClick={() => onDeleteExpense(exp.id)} className="p-3 bg-red-50 rounded-2xl text-red-600 hover:bg-red-600 hover:text-white transition-all shadow-sm"><Trash2 size={20}/></button>
+               </div>
+            </div>
+          </div>
+        )})}
+      </div>
+    </div>
+  );
+}
+
+function EditTripModal({ trip, onSave, onClose, loading }) {
+  const [form, setForm] = useState({ client: trip.client, destination: trip.destination, start_date: trip.start_date, end_date: trip.end_date });
+  return (
+    <div className="fixed inset-0 bg-slate-900/90 flex items-center justify-center p-4 z-50 backdrop-blur-md">
+      <div className="bg-white rounded-[40px] max-w-xl w-full p-6 sm:p-10 shadow-2xl text-left animate-in zoom-in-95 duration-200">
+        <div className="flex justify-between items-center mb-8 border-b pb-4 text-left"><h3 className="font-black text-2xl text-slate-800 flex items-center gap-3"><Edit3 className="text-blue-500"/> Editar Viagem</h3><button onClick={onClose} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200 transition-all"><X size={20}/></button></div>
+        <div className="space-y-5 text-left">
+          <div><label className="text-[10px] font-black text-slate-500 uppercase block mb-1 ml-1">Nome do Cliente</label><input type="text" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" value={form.client} onChange={e=>setForm({...form, client: e.target.value})} /></div>
+          <div><label className="text-[10px] font-black text-slate-500 uppercase block mb-1 ml-1">Destino (Cidade)</label><input type="text" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" value={form.destination} onChange={e=>setForm({...form, destination: e.target.value})} /></div>
+          <div className="grid grid-cols-2 gap-4 text-left">
+            <div><label className="text-[10px] font-black text-slate-500 uppercase block mb-1 ml-1">Início</label><input type="date" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" value={form.start_date} onChange={e=>setForm({...form, start_date: e.target.value})} /></div>
+            <div><label className="text-[10px] font-black text-slate-500 uppercase block mb-1 ml-1">Fim Previsto</label><input type="date" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" value={form.end_date} onChange={e=>setForm({...form, end_date: e.target.value})} /></div>
+          </div>
+        </div>
+        <div className="flex justify-end gap-4 pt-6 border-t mt-6"><button onClick={onClose} className="px-8 py-4 rounded-2xl font-black uppercase text-xs text-slate-400 hover:bg-slate-100 transition-all">Cancelar</button><button onClick={() => onSave(trip.id, form)} disabled={loading} className="bg-blue-600 text-white px-10 py-4 rounded-2xl font-black uppercase text-xs shadow-xl flex items-center gap-2 hover:bg-blue-700 transition-all active:scale-95"><Save size={16}/> GUARDAR</button></div>
+      </div>
     </div>
   );
 }
@@ -433,7 +537,7 @@ function LoginScreen({ onLogin, isLoading }) {
         <p className="text-slate-400 text-xs sm:text-sm mb-8 text-center font-medium">Controlo de Despesas Corporativas</p>
         {err && <div className="mb-6 p-4 bg-red-50 text-red-600 text-xs sm:text-sm rounded-2xl font-bold border border-red-100 animate-pulse text-center">{err}</div>}
         <div className="space-y-4 text-left">
-          <input type="text" placeholder="Nome do utilizador" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none" value={user} onChange={e => setUser(e.target.value)} required disabled={isLoading} />
+          <input type="text" placeholder="Utilizador" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none" value={user} onChange={e => setUser(e.target.value)} required disabled={isLoading} />
           <input type="password" placeholder="Senha corporativa" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl outline-none" value={pass} onChange={e => setPass(e.target.value)} required disabled={isLoading} />
           <button disabled={isLoading} className="w-full bg-blue-600 text-white p-5 rounded-2xl font-black text-lg hover:bg-blue-700 shadow-xl transition-all uppercase tracking-widest">ENTRAR</button>
         </div>
@@ -448,10 +552,10 @@ function TripForm({ onSubmit, loading }) {
     <form onSubmit={(e) => { e.preventDefault(); onSubmit(form); }} className="bg-white p-6 sm:p-10 rounded-[40px] shadow-sm border border-slate-100 space-y-6 text-left animate-in fade-in slide-in-from-bottom-4 duration-300">
       <div className="border-b pb-4 flex items-center gap-3"><Briefcase className="text-blue-500" size={28}/><h2 className="font-black text-xl sm:text-2xl text-slate-800 tracking-tight">Criar Viagem</h2></div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="space-y-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Cliente</label><input type="text" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.client} onChange={e => setForm({...form, client: e.target.value})} required /></div>
-        <div className="space-y-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Destino (Cidade)</label><input type="text" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.destination} onChange={e => setForm({...form, destination: e.target.value})} required /></div>
-        <div className="space-y-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Início</label><input type="date" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})} required /></div>
-        <div className="space-y-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Fim Previsto</label><input type="date" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} required /></div>
+        <div className="space-y-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Cliente</label><input type="text" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" value={form.client} onChange={e => setForm({...form, client: e.target.value})} required /></div>
+        <div className="space-y-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Destino (Cidade)</label><input type="text" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" value={form.destination} onChange={e => setForm({...form, destination: e.target.value})} required /></div>
+        <div className="space-y-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Início</label><input type="date" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})} required /></div>
+        <div className="space-y-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Fim Previsto</label><input type="date" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500" value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} required /></div>
       </div>
       <button disabled={loading} className="w-full bg-blue-600 text-white p-5 rounded-2xl font-black text-lg hover:bg-blue-700 transition-all shadow-xl uppercase tracking-widest">CRIAR VIAGEM</button>
     </form>
@@ -476,7 +580,7 @@ function ExpenseForm({ onSubmit, trips, loading }) {
         <label className="text-[10px] font-black text-blue-800 uppercase block mb-2 tracking-widest">Associar a Viagem Aberta</label>
         <select className="w-full p-4 border border-blue-200 rounded-2xl bg-white font-bold outline-none" value={form.tripId} onChange={e => setForm({...form, tripId: e.target.value})}>
           <option value="">-- Sem Viagem (Avulso) --</option>
-          {trips.map(t => <option key={t.id} value={t.id}>{t.client} - {new Date(t.start_date).toLocaleDateString('pt-BR')}</option>)}
+          {trips.map(t => <option key={t.id} value={t.id}>{t.client} - {formatDateDisplay(t.start_date)}</option>)}
         </select>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
@@ -511,68 +615,15 @@ function TripsList({ trips, expenses, getComputedTripStatus, onViewTrip }) {
         const status = getComputedTripStatus(trip);
         return (
           <div key={trip.id} className="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border border-slate-100 flex flex-col justify-between hover:shadow-lg transition-all text-left">
-            <div>
+            <div className="text-left">
               <div className="flex justify-between items-start mb-4"><div className="bg-blue-50 text-blue-600 p-3 rounded-2xl"><Plane size={24} /></div><div className={`px-2 py-1 rounded text-[9px] font-black uppercase ${status === 'Aberta' ? 'bg-blue-100 text-blue-700 border-blue-200' : 'bg-yellow-100 text-yellow-700 border-yellow-200'} border`}>{status}</div></div>
-              <h3 className="font-black text-xl text-slate-800 mb-1 leading-tight">{trip.client} - {new Date(trip.start_date).toLocaleDateString('pt-BR')}</h3>
+              <h3 className="font-black text-xl text-slate-800 mb-1 leading-tight">{trip.client} - {formatDateDisplay(trip.start_date)}</h3>
               <p className="text-sm font-bold text-slate-500 mb-4">{trip.destination}</p>
             </div>
-            <div className="border-t pt-5"><div className="flex justify-between items-end mb-5"><div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Acumulado</p><p className="font-black text-2xl tabular-nums">R$ {total.toFixed(2)}</p></div><button onClick={() => onViewTrip(trip)} className="bg-slate-50 px-4 py-2 text-blue-600 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-blue-100 border border-blue-50">Gerir</button></div></div>
+            <div className="border-t pt-5"><div className="flex justify-between items-end mb-5"><div><p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Acumulado</p><p className="font-black text-2xl tabular-nums">R$ {total.toFixed(2)}</p></div><button onClick={() => onViewTrip(trip)} className="bg-slate-50 px-4 py-2 text-blue-600 rounded-xl font-black text-xs uppercase tracking-widest hover:bg-blue-100 border border-blue-50 transition-all shadow-sm">Gerir</button></div></div>
           </div>
         );
       })}
-    </div>
-  );
-}
-
-function TripDetailsView({ trip, expenses, getComputedTripStatus, onBack, onCloseTrip, onDeleteTrip, onViewAttachment, onEditExpense, onDeleteExpense, loading }) {
-  const status = getComputedTripStatus(trip);
-  const isEditable = status === 'Aberta' || status === 'Em Revisão';
-  const totalRef = expenses.filter(e => e.isRefundable).reduce((acc, e) => acc + parseFloat(e.amount), 0);
-  const totalCorp = expenses.filter(e => !e.isRefundable).reduce((acc, e) => acc + parseFloat(e.amount), 0);
-  return (
-    <div className="animate-in fade-in slide-in-from-right-4 duration-300 text-left">
-      <button onClick={onBack} className="mb-6 flex items-center gap-2 text-xs font-black text-slate-500 uppercase bg-white px-5 py-3 rounded-2xl border border-slate-100 shadow-sm"><ArrowLeft size={16} /> Voltar</button>
-      <div className="bg-white p-6 sm:p-10 rounded-[40px] shadow-sm border border-slate-100 mb-6 flex flex-col md:flex-row justify-between gap-6 text-left">
-        <div><h2 className="font-black text-2xl text-slate-800 leading-tight">{trip.client} - {new Date(trip.start_date).toLocaleDateString('pt-BR')}</h2><p className="text-slate-500 mb-4 mt-1 flex items-center gap-2 font-medium tracking-tight"><MapPin size={16}/> {trip.destination}</p><div className="flex gap-6"><div><p className="text-[10px] font-black text-slate-400 uppercase mb-1">A Reembolsar</p><p className="font-black text-2xl text-green-600">R$ {totalRef.toFixed(2)}</p></div><div><p className="text-[10px] font-black text-slate-400 uppercase tracking-tighter mb-1">Cartão Empresa</p><p className="font-black text-2xl text-slate-400">R$ {totalCorp.toFixed(2)}</p></div></div></div>
-        <div className="flex flex-col gap-3 min-w-[200px]">
-          {status === 'Aberta' && <button onClick={() => onCloseTrip(trip.id, false)} disabled={loading || expenses.length === 0} className="bg-slate-900 text-white py-4 rounded-2xl font-black text-xs shadow-xl uppercase tracking-widest">Concluir Viagem</button>}
-          {status === 'Em Revisão' && <button onClick={() => onCloseTrip(trip.id, true)} disabled={loading} className="bg-blue-600 text-white py-4 rounded-2xl font-black text-xs shadow-xl uppercase tracking-widest">Enviar Agora</button>}
-          {status === 'Aberta' && expenses.length === 0 && <button onClick={onDeleteTrip} disabled={loading} className="w-full bg-red-50 text-red-600 py-3 rounded-2xl font-black text-xs uppercase flex justify-center items-center gap-2 border border-red-100 transition-colors"><Trash2 size={16}/> Excluir</button>}
-        </div>
-      </div>
-      <ExpenseList data={expenses} isGestor={false} onViewAttachment={onViewAttachment} onEditExpense={isEditable ? onEditExpense : null} onDeleteExpense={isEditable ? onDeleteExpense : null} title="Despesas da Viagem" hideTripBadge />
-    </div>
-  );
-}
-
-function ExpenseList({ data, isGestor, onUpdateStatus, onViewAttachment, onEditExpense, onDeleteExpense, showAll, title, hideTripBadge }) {
-  return (
-    <div className="bg-white rounded-3xl border border-slate-100 overflow-hidden text-left shadow-sm">
-      <div className="p-6 border-b flex justify-between items-center bg-white"><h2 className="font-black text-lg text-slate-800 tracking-tight">{title}</h2><span className="text-xs font-black text-slate-400 bg-slate-100 px-3 py-1 rounded-lg">{data.length}</span></div>
-      <div className="divide-y divide-slate-100">
-        {data.map(exp => (
-          <div key={exp.id} className="p-5 flex flex-col lg:flex-row lg:justify-between lg:items-center gap-4 hover:bg-slate-50 transition-all group">
-            <div className="flex-1 text-left">
-              {showAll && <div className="font-black text-blue-600 text-[10px] mb-1 uppercase tracking-widest">{exp.userName}</div>}
-              <div className="flex items-center gap-2 text-slate-800 font-bold">{new Date(exp.date).toLocaleDateString('pt-BR')} <span className="text-[10px] text-slate-400 uppercase font-black px-2 border rounded-md border-slate-200">{exp.category}</span></div>
-              <div className="text-xs text-slate-500 mt-1 line-clamp-1 italic">{exp.description}</div>
-              <div className="flex gap-2 items-center mt-1">
-                {!hideTripBadge && exp.tripId && <div className="text-[9px] font-black text-blue-600 uppercase bg-blue-50 px-2 py-0.5 rounded border border-blue-100">Viagem</div>}
-                {!exp.isRefundable && <div className="inline-block bg-slate-100 text-slate-500 text-[8px] px-1.5 py-0.5 rounded font-black uppercase">Cartão Empresa</div>}
-              </div>
-            </div>
-            <div className="flex items-center justify-between lg:justify-end gap-6 border-t lg:border-0 pt-3 lg:pt-0">
-               <div className="text-right"><div className={`font-black text-xl tabular-nums ${exp.isRefundable ? 'text-slate-900' : 'text-slate-400 line-through decoration-slate-300'}`}>R$ {parseFloat(exp.amount).toFixed(2)}</div><div className={`text-[9px] font-black uppercase mt-1 ${exp.status === 'Enviado' ? 'text-blue-500' : 'text-green-600'}`}>{exp.status}</div></div>
-               <div className="flex gap-2">
-                 <button onClick={() => onViewAttachment({ name: exp.receiptName, userId: exp.userId })} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Eye size={20}/></button>
-                 {onEditExpense && <button onClick={() => onEditExpense(exp)} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Edit3 size={20}/></button>}
-                 {isGestor && exp.status === 'Enviado' && <button onClick={() => onUpdateStatus(exp.id, 'Aprovado')} className="p-3 bg-green-500 rounded-2xl text-white shadow-lg shadow-green-100 transition-all active:scale-95"><CheckCircle size={20}/></button>}
-                 <button onClick={() => onDeleteExpense(exp.id)} className="p-3 bg-red-50 rounded-2xl text-red-600 hover:bg-red-600 hover:text-white transition-all shadow-sm"><Trash2 size={20}/></button>
-               </div>
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -582,10 +633,10 @@ function MonthlyClosing({ expenses, onDownloadExcel, onDownloadZip, zippingState
   const months = [...new Set(expenses.map(e => e.month))].sort().reverse();
   return (
     <div className="space-y-6 text-left animate-in fade-in duration-300">
-      <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm flex items-center gap-4"><div className="bg-blue-100 p-3 rounded-2xl"><BarChart3 className="text-blue-600" size={28}/></div><h2 className="font-black text-xl text-slate-800 tracking-tight">Fechamento Mensal</h2></div>
+      <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm flex items-center gap-4"><div className="bg-blue-100 p-3 rounded-2xl"><BarChart3 className="text-blue-600" size={28}/></div><h2 className="font-black text-xl text-slate-800 tracking-tight text-left">Fechamento Mensal</h2></div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 text-left">
         <div className="lg:col-span-1 space-y-3">{months.map(m => <button key={m} onClick={() => setSelectedMonth(m)} className={`w-full p-6 rounded-3xl border transition-all text-left flex justify-between items-center ${selectedMonth === m ? 'bg-blue-600 text-white border-blue-600 shadow-xl' : 'bg-white border-slate-100 text-slate-800'}`}>{m}<Calendar size={20}/></button>)}</div>
-        <div className="lg:col-span-2">{selectedMonth ? <ClosingDetails month={selectedMonth} expenses={expenses} onExcel={() => onDownloadExcel(selectedMonth)} onZip={(seller) => onDownloadZip(selectedMonth, seller)} zippingState={zippingState} /> : <div className="bg-white h-64 rounded-3xl border border-slate-100 flex items-center justify-center text-slate-400 font-black uppercase tracking-widest text-xs italic">Selecione um mês à esquerda</div>}</div>
+        <div className="lg:col-span-2 text-left">{selectedMonth ? <ClosingDetails month={selectedMonth} expenses={expenses} onExcel={() => onDownloadExcel(selectedMonth)} onZip={(seller) => onDownloadZip(selectedMonth, seller)} zippingState={zippingState} /> : <div className="bg-white h-64 rounded-3xl border border-slate-100 flex items-center justify-center text-slate-400 font-black uppercase tracking-widest text-xs italic">Selecione um mês à esquerda</div>}</div>
       </div>
     </div>
   );
@@ -604,7 +655,7 @@ function ClosingDetails({ month, expenses, onExcel, onZip, zippingState }) {
   return (
     <div className="bg-white p-6 sm:p-10 rounded-3xl border border-slate-100 shadow-sm text-left animate-in fade-in duration-300">
       <div className="flex flex-col sm:flex-row justify-between items-start mb-8 border-b pb-6 gap-4 text-left">
-        <div><p className="text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Mês Referência</p><h3 className="font-black text-3xl text-slate-800">{month}</h3></div>
+        <div className="text-left"><p className="text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Mês Referência</p><h3 className="font-black text-3xl text-slate-800">{month}</h3></div>
         <div className="flex gap-3 w-full sm:w-auto">
           <button onClick={onExcel} className="flex-1 sm:flex-none bg-emerald-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg tracking-widest hover:bg-emerald-600 transition-all"><Download size={14}/> Excel GERAL</button>
           <button onClick={() => onZip(null)} disabled={zippingState.active && zippingState.label === 'GERAL'} className="flex-1 sm:flex-none bg-indigo-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-indigo-600 transition-all">
@@ -639,7 +690,7 @@ function TeamManagement({ users, onAddUser, onDeleteUser, loading }) {
         <div className="text-left"><label className="text-[9px] font-black uppercase text-slate-400 block ml-2 mb-1">Nome</label><input type="text" className="w-full p-4 rounded-2xl border border-slate-200 outline-none text-sm" value={form.name} onChange={e=>setForm({...form, name:e.target.value})} required /></div>
         <div className="text-left"><label className="text-[9px] font-black uppercase text-slate-400 block ml-2 mb-1">Senha</label><input type="text" className="w-full p-4 rounded-2xl border border-slate-200 outline-none text-sm" value={form.password} onChange={e=>setForm({...form, password:e.target.value})} required /></div>
         <div className="text-left"><label className="text-[9px] font-black uppercase text-slate-400 block ml-2 mb-1">Função</label><select className="w-full p-4 rounded-2xl border border-slate-200 outline-none text-sm" value={form.role} onChange={e=>setForm({...form, role:e.target.value})}><option value="vendedor">Vendedor</option><option value="gestor">Gestor</option></select></div>
-        <button disabled={loading} className="bg-orange-600 text-white p-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-lg shadow-orange-100"><UserPlus size={18} className="inline mr-2"/> ADICIONAR</button>
+        <button disabled={loading} className="bg-orange-600 text-white p-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-lg shadow-orange-100 transition-all hover:bg-orange-700 active:scale-95"><UserPlus size={18} className="inline mr-2"/> ADICIONAR</button>
       </form>
       <div className="divide-y divide-slate-100 text-left">{users.map(u => (<div key={u.id} className="p-4 flex justify-between items-center hover:bg-slate-50 transition-colors text-left"><div><div className="font-black text-slate-800">{u.name}</div><div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{u.role}</div></div><button onClick={()=>onDeleteUser(u.id)} disabled={u.role==='gestor'} className="p-3 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={20}/></button></div>))}</div>
     </div>
@@ -649,7 +700,7 @@ function TeamManagement({ users, onAddUser, onDeleteUser, loading }) {
 function NavBtn({ active, onClick, icon, label, badge }) {
   return (
     <button onClick={onClick} className={`w-full flex items-center justify-between px-6 py-5 rounded-3xl font-black text-[11px] tracking-[0.2em] uppercase transition-all ${active ? 'bg-blue-600 text-white shadow-xl md:scale-[1.05]' : 'text-slate-500 hover:bg-white hover:shadow-sm'}`}>
-      <div className="flex items-center gap-4">{icon} {label}</div>
+      <div className="flex items-center gap-4 text-left">{icon} {label}</div>
       {badge > 0 && <span className="bg-red-500 text-white text-[9px] px-2 py-1 rounded-xl ring-4 ring-slate-50 animate-pulse">{badge}</span>}
     </button>
   );
@@ -660,9 +711,9 @@ function EditExpenseModal({ expense, trips, onSave, onClose, loading }) {
   return (
     <div className="fixed inset-0 bg-slate-900/90 flex items-center justify-center p-4 z-50 backdrop-blur-md">
       <div className="bg-white rounded-[40px] max-w-2xl w-full p-6 sm:p-10 shadow-2xl text-left animate-in zoom-in-95 duration-200">
-        <div className="flex justify-between items-center mb-8 border-b pb-4"><h3 className="font-black text-2xl text-slate-800 flex items-center gap-3"><Edit3 className="text-blue-500"/> Editar Despesa</h3><button onClick={onClose} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200 transition-all"><X size={20}/></button></div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6">
-          <div className="sm:col-span-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Viagem</label><select className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl" value={form.tripId} onChange={e=>setForm({...form, tripId: e.target.value})}><option value="">-- Sem Viagem --</option>{trips.map(t => <option key={t.id} value={t.id}>{t.client} - {new Date(t.start_date).toLocaleDateString('pt-BR')}</option>)}</select></div>
+        <div className="flex justify-between items-center mb-8 border-b pb-4 text-left"><h3 className="font-black text-2xl text-slate-800 flex items-center gap-3"><Edit3 className="text-blue-500"/> Editar Despesa</h3><button onClick={onClose} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200 transition-all"><X size={20}/></button></div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 mb-6 text-left">
+          <div className="sm:col-span-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Viagem</label><select className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl" value={form.tripId} onChange={e=>setForm({...form, tripId: e.target.value})}><option value="">-- Sem Viagem --</option>{trips.map(t => <option key={t.id} value={t.id}>{t.client} - {formatDateDisplay(t.start_date)}</option>)}</select></div>
           <div className="text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Data</label><input type="date" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl" value={form.date} onChange={e=>setForm({...form, date: e.target.value})} /></div>
           <div className="text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Valor (R$)</label><input type="number" step="0.01" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" value={form.amount} onChange={e=>setForm({...form, amount: e.target.value})} /></div>
           <div className="sm:col-span-2 flex items-center gap-3 mt-4 text-left"><input type="checkbox" checked={form.isRefundable} onChange={e=>setForm({...form, isRefundable: e.target.checked})} className="w-6 h-6 rounded-lg accent-green-600 shadow-sm"/><label className="font-black text-sm text-slate-700">Gasto Reembolsável (Dinheiro Próprio)</label></div>
@@ -681,7 +732,7 @@ function ConfirmModal({ item, onConfirm, onClose, loading }) {
         <h3 className="font-black text-2xl text-slate-800 mb-3 uppercase tracking-tighter text-center">Eliminar Registo?</h3>
         <p className="text-slate-500 text-sm mb-8 leading-relaxed italic text-center">Esta ação não pode ser revertida na base de dados.</p>
         <div className="flex flex-col gap-3">
-          <button onClick={onConfirm} disabled={loading} className="w-full bg-red-600 text-white px-8 py-5 rounded-2xl font-black uppercase text-xs hover:bg-red-700 shadow-xl tracking-widest transition-all">SIM, ELIMINAR</button>
+          <button onClick={onConfirm} disabled={loading} className="w-full bg-red-600 text-white px-8 py-5 rounded-2xl font-black uppercase text-xs hover:bg-red-700 shadow-xl tracking-widest transition-all active:scale-95">SIM, ELIMINAR</button>
           <button onClick={onClose} disabled={loading} className="w-full bg-slate-100 text-slate-600 px-8 py-5 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 transition-all">CANCELAR</button>
         </div>
       </div>
@@ -712,7 +763,7 @@ function MessageModal({ msg, onClose }) {
         <div className="bg-green-100 w-24 h-24 rounded-[32px] flex items-center justify-center mx-auto mb-10 shadow-inner"><CheckCircle size={48} className="text-green-600" /></div>
         <h3 className="font-black text-3xl text-slate-800 mb-4 tracking-tighter text-center">{msg.title}</h3>
         <p className="text-slate-400 text-sm mb-12 italic text-center leading-relaxed">"{msg.text}"</p>
-        <button onClick={onClose} className="w-full bg-slate-900 text-white p-6 rounded-[32px] font-black uppercase tracking-[0.3em] hover:bg-blue-600 transition-all text-sm shadow-xl">CONTINUAR</button>
+        <button onClick={onClose} className="w-full bg-slate-900 text-white p-6 rounded-[32px] font-black uppercase tracking-[0.3em] hover:bg-blue-600 transition-all text-sm shadow-xl transition-all active:scale-95">CONTINUAR</button>
       </div>
     </div>
   );
