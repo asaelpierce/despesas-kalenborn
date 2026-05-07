@@ -237,15 +237,24 @@ export default function App() {
   };
 
   const generateExcelBlob = (list) => {
-    const headers = ['Vendedor', 'Data', 'Viagem / Cliente', 'Categoria', 'Valor (R$)', 'Reembolsável?', 'Descrição', 'Link'];
+    const headers = ['Vendedor', 'Data do Gasto', 'Viagem / Cliente', 'Data Início Viagem', 'Data Fim Viagem', 'Categoria', 'Valor (R$)', 'Reembolsável?', 'Descrição', 'Link'];
     const csvRows = list.map(exp => {
       const trip = trips.find(t => t.id === exp.tripId);
       const tripInfo = trip ? `${trip.client} (${trip.destination})` : 'Lançamento Avulso';
+      const tripStartDate = trip ? formatDateDisplay(trip.start_date) : '-';
+      const tripEndDate = trip ? formatDateDisplay(trip.end_date) : '-';
       const url = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${exp.userId}/${exp.receiptName}`;
       return [
-        `"${exp.userName}"`, `"${formatDateDisplay(exp.date)}"`, `"${tripInfo}"`, `"${exp.category}"`,
-        `"${parseFloat(exp.amount).toFixed(2).replace('.', ',')}"`, `"${exp.isRefundable ? 'SIM' : 'NÃO'}"`,
-        `"${exp.description}"`, `"${url}"`
+        `"${exp.userName}"`, 
+        `"${formatDateDisplay(exp.date)}"`, 
+        `"${tripInfo}"`, 
+        `"${tripStartDate}"`, 
+        `"${tripEndDate}"`,
+        `"${exp.category}"`,
+        `"${parseFloat(exp.amount).toFixed(2).replace('.', ',')}"`, 
+        `"${exp.isRefundable ? 'SIM' : 'NÃO'}"`,
+        `"${exp.description}"`, 
+        `"${url}"`
       ].join(';');
     });
     return new Blob(["\uFEFF" + headers.join(';') + '\n' + csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
