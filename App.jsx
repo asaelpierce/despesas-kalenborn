@@ -882,9 +882,34 @@ function ReservaForm({ vendedores = [], onExtract, onSubmit, isExtracting, loadi
 }
 
 function ReservaList({ data, onUpdateStatus, onViewAttachment, onDeleteReserva, title, showOwner }) {
+  const [filtroVendedor, setFiltroVendedor] = useState('');
+  const [filtroTipo, setFiltroTipo] = useState('');
+  const [filtroStatus, setFiltroStatus] = useState('');
+  const [filtroDataInicio, setFiltroDataInicio] = useState('');
+  const [filtroDataFim, setFiltroDataFim] = useState('');
+  const [busca, setBusca] = useState('');
+
+  const vendedoresDisponiveis = [...new Set(data.map(r => r.vendedor_nome || 'Sem vendedor definido'))].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+
+  const filtered = data.filter(r => {
+    if (filtroVendedor && (r.vendedor_nome || 'Sem vendedor definido') !== filtroVendedor) return false;
+    if (filtroTipo && r.tipo !== filtroTipo) return false;
+    if (filtroStatus && r.status !== filtroStatus) return false;
+    if (filtroDataInicio && (!r.data_inicio || r.data_inicio < filtroDataInicio)) return false;
+    if (filtroDataFim && (!r.data_inicio || r.data_inicio > filtroDataFim)) return false;
+    if (busca) {
+      const alvo = `${r.fornecedor || ''} ${r.cliente || ''} ${r.local || ''}`.toLowerCase();
+      if (!alvo.includes(busca.toLowerCase())) return false;
+    }
+    return true;
+  });
+
+  const hasFilters = filtroVendedor || filtroTipo || filtroStatus || filtroDataInicio || filtroDataFim || busca;
+  const limparFiltros = () => { setFiltroVendedor(''); setFiltroTipo(''); setFiltroStatus(''); setFiltroDataInicio(''); setFiltroDataFim(''); setBusca(''); };
+
   // Agrupa por vendedor (ou "Sem vendedor") e ordena cada grupo por data_inicio (mais recente primeiro).
   const groups = {};
-  data.forEach(r => {
+  filtered.forEach(r => {
     const key = r.vendedor_nome || 'Sem vendedor definido';
     if (!groups[key]) groups[key] = [];
     groups[key].push(r);
@@ -898,10 +923,39 @@ function ReservaList({ data, onUpdateStatus, onViewAttachment, onDeleteReserva, 
     <div className="space-y-6 text-left animate-in fade-in duration-300">
       <div className="flex justify-between items-center">
         <h2 className="font-black text-lg text-slate-800 tracking-tight">{title}</h2>
-        <span className="text-xs font-black text-slate-400 bg-slate-100 px-3 py-1 rounded-lg">{data.length} reserva(s)</span>
+        <span className="text-xs font-black text-slate-400 bg-slate-100 px-3 py-1 rounded-lg">{filtered.length} de {data.length} reserva(s)</span>
       </div>
-      {data.length === 0 ? (
-        <div className="bg-white p-10 rounded-3xl text-center text-slate-300 italic uppercase text-[10px] font-black tracking-widest border border-slate-100 shadow-sm">Nenhuma reserva encontrada</div>
+
+      <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-4">
+        <div className="relative">
+          <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" />
+          <input type="text" placeholder="Buscar por fornecedor, cliente ou local..." value={busca} onChange={e => setBusca(e.target.value)} className="w-full p-4 pl-11 border border-slate-200 rounded-2xl bg-slate-50 outline-none focus:ring-2 focus:ring-blue-500 text-sm" />
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <select value={filtroVendedor} onChange={e => setFiltroVendedor(e.target.value)} className="p-3 border border-slate-200 rounded-2xl bg-slate-50 outline-none text-xs font-bold">
+            <option value="">Todos os vendedores</option>
+            {vendedoresDisponiveis.map(v => <option key={v} value={v}>{v}</option>)}
+          </select>
+          <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)} className="p-3 border border-slate-200 rounded-2xl bg-slate-50 outline-none text-xs font-bold">
+            <option value="">Todos os tipos</option>
+            {RESERVA_TIPOS.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+          <select value={filtroStatus} onChange={e => setFiltroStatus(e.target.value)} className="p-3 border border-slate-200 rounded-2xl bg-slate-50 outline-none text-xs font-bold">
+            <option value="">Todos os status</option>
+            <option value="Pendente">Pendente</option>
+            <option value="Confirmada">Confirmada</option>
+            <option value="Cancelada">Cancelada</option>
+          </select>
+          <input type="date" value={filtroDataInicio} onChange={e => setFiltroDataInicio(e.target.value)} title="Data inicial (a partir de)" className="p-3 border border-slate-200 rounded-2xl bg-slate-50 outline-none text-xs font-bold" />
+          <input type="date" value={filtroDataFim} onChange={e => setFiltroDataFim(e.target.value)} title="Data final (até)" className="p-3 border border-slate-200 rounded-2xl bg-slate-50 outline-none text-xs font-bold" />
+        </div>
+        {hasFilters && (
+          <button onClick={limparFiltros} className="text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-red-500 transition-colors flex items-center gap-1"><X size={14}/> Limpar filtros</button>
+        )}
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="bg-white p-10 rounded-3xl text-center text-slate-300 italic uppercase text-[10px] font-black tracking-widest border border-slate-100 shadow-sm">Nenhuma reserva encontrada com esses filtros</div>
       ) : groupNames.map(name => (
         <div key={name} className="bg-white rounded-3xl border border-slate-100 overflow-hidden shadow-sm">
           <div className="p-5 border-b bg-slate-50 flex justify-between items-center">
