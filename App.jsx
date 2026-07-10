@@ -20,7 +20,10 @@ const HEADERS = {
 const ENDPOINT_USERS = `${SUPABASE_URL}/rest/v1/users`;
 const ENDPOINT_EXPENSES = `${SUPABASE_URL}/rest/v1/expenses`;
 const ENDPOINT_TRIPS = `${SUPABASE_URL}/rest/v1/trips`;
+const ENDPOINT_RESERVAS = `${SUPABASE_URL}/rest/v1/reservas`;
+const EDGE_FUNCTION_EXTRACT = `${SUPABASE_URL}/functions/v1/extract-reserva`;
 const STORAGE_BUCKET = 'attachments';
+const RESERVA_TIPOS = ['Hotel', 'Carro', 'Passagem'];
 
 const CATEGORIES = ['Alimentação', 'Hospedagem', 'Transporte', 'Combustível', 'Outros'];
 
@@ -43,6 +46,12 @@ const STATUS_COLORS = {
   'Fechado': 'bg-purple-100 text-purple-800 border-purple-200',
 };
 
+const RESERVA_STATUS_COLORS = {
+  'Pendente': 'bg-yellow-100 text-yellow-800 border-yellow-200',
+  'Confirmada': 'bg-green-100 text-green-800 border-green-200',
+  'Cancelada': 'bg-red-100 text-red-800 border-red-200',
+};
+
 // --- FUNÇÃO AUXILIAR PARA CORRIGIR DATAS (Evita o erro de 1 dia a menos) ---
 const formatDateDisplay = (dateString) => {
   if (!dateString) return "";
@@ -57,6 +66,8 @@ export default function App() {
   const [isLoadingUsers, setIsLoadingUsers] = useState(true);
   const [expenses, setExpenses] = useState([]);
   const [trips, setTrips] = useState([]);
+  const [reservas, setReservas] = useState([]);
+  const [isExtracting, setIsExtracting] = useState(false);
   
   const [activeTab, setActiveTab] = useState('minhas_despesas');
   const [attachmentToView, setAttachmentToView] = useState(null);
@@ -72,15 +83,17 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const [resUsers, resExp, resTrips] = await Promise.all([
+      const [resUsers, resExp, resTrips, resReservas] = await Promise.all([
         fetch(`${ENDPOINT_USERS}?select=*`, { headers: HEADERS }),
         fetch(`${ENDPOINT_EXPENSES}?select=*&order=created_at.desc`, { headers: HEADERS }),
-        fetch(`${ENDPOINT_TRIPS}?select=*&order=created_at.desc`, { headers: HEADERS })
+        fetch(`${ENDPOINT_TRIPS}?select=*&order=created_at.desc`, { headers: HEADERS }),
+        fetch(`${ENDPOINT_RESERVAS}?select=*&order=created_at.desc`, { headers: HEADERS })
       ]);
       
       if (resUsers.ok) setUsers(await resUsers.json());
       if (resExp.ok) setExpenses(await resExp.json());
       if (resTrips.ok) setTrips(await resTrips.json());
+      if (resReservas.ok) setReservas(await resReservas.json());
       
     } catch (error) {
       console.error("Erro ao carregar dados:", error);
@@ -109,7 +122,7 @@ export default function App() {
     const user = users.find(u => (u.name || '').toLowerCase() === username.toLowerCase().trim());
     if (user && user.password === password.trim()) {
       setCurrentUser(user);
-      setActiveTab(user.role === 'gestor' ? 'aprovacoes' : 'minhas_despesas');
+      setActiveTab(user.role === 'gestor' ? 'aprovacoes' : user.role === 'comercial' ? 'nova_reserva' : 'minhas_despesas');
       return true;
     }
     return false;
@@ -203,6 +216,68 @@ export default function App() {
     } finally { setIsLoading(false); }
   };
 
+  // Faz upload do comprovativo e devolve o caminho + URL pública, sem criar o registo ainda.
+  const uploadReservaFile = async (file) => {
+    const uniqueFileName = `${Date.now()}_${file.name.replace(/\s/g, '_')}`;
+    const filePath = `reservas/${currentUser.id}/${uniqueFileName}`;
+    await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${filePath}`, {
+      method: 'POST',
+      headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': file.type },
+      body: file
+    });
+    const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${filePath}`;
+    return { uniqueFileName, filePath, publicUrl };
+  };
+
+  // Envia o comprovativo já hospedado para a Edge Function, que chama a Render + GPT e devolve os dados extraídos.
+  const handleExtractReserva = async (file, tipo) => {
+    setIsExtracting(true);
+    try {
+      const { uniqueFileName, publicUrl } = await uploadReservaFile(file);
+      const res = await fetch(EDGE_FUNCTION_EXTRACT, {
+        method: 'POST',
+        headers: { ...HEADERS },
+        body: JSON.stringify({ fileUrl: publicUrl, tipo })
+      });
+      const result = await res.json();
+      if (!res.ok || result.error) {
+        setSystemMessage({ title: 'Falha na extração', text: result.error || 'Não foi possível extrair os dados automaticamente. Preencha manualmente.' });
+        return { receiptName: uniqueFileName, extracted: null };
+      }
+      return { receiptName: uniqueFileName, extracted: result.data, rawExtraction: result };
+    } catch (error) {
+      setSystemMessage({ title: 'Falha na extração', text: 'Erro ao contactar o serviço de extração. Preencha manualmente.' });
+      return { receiptName: null, extracted: null };
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  const handleAddReserva = async (formData, receiptName, rawExtraction) => {
+    setIsLoading(true);
+    try {
+      const payload = {
+        userId: currentUser.id, userName: currentUser.name,
+        tipo: formData.tipo, fornecedor: formData.fornecedor,
+        valor: formData.valor ? parseFloat(formData.valor) : null,
+        data_inicio: formData.dataInicio || null, data_fim: formData.dataFim || null,
+        local: formData.local, cliente: formData.cliente, observacoes: formData.observacoes,
+        vendedor_id: formData.vendedorId || null, vendedor_nome: formData.vendedorNome || null,
+        receiptName, status: 'Pendente',
+        extraido_automaticamente: !!rawExtraction,
+        raw_extraction: rawExtraction || null
+      };
+      const res = await fetch(ENDPOINT_RESERVAS, { method: 'POST', headers: { ...HEADERS, 'Prefer': 'return=minimal' }, body: JSON.stringify(payload) });
+      if (res.ok) { fetchData(); setSystemMessage({ title: 'Reserva lançada', text: 'Reserva registada com sucesso!' }); return true; }
+    } finally { setIsLoading(false); }
+    return false;
+  };
+
+  const handleUpdateReservaStatus = async (id, newStatus) => {
+    await fetch(`${ENDPOINT_RESERVAS}?id=eq.${id}`, { method: 'PATCH', headers: HEADERS, body: JSON.stringify({ status: newStatus }) });
+    fetchData();
+  };
+
   const handleEditExpenseSave = async (id, updatedData) => {
     setIsLoading(true);
     const payload = {
@@ -226,6 +301,7 @@ export default function App() {
       setActiveTab('viagens');
     }
     else if (itemToDelete.type === 'user') await fetch(`${ENDPOINT_USERS}?id=eq.${itemToDelete.id}`, { method: 'DELETE', headers: HEADERS });
+    else if (itemToDelete.type === 'reserva') await fetch(`${ENDPOINT_RESERVAS}?id=eq.${itemToDelete.id}`, { method: 'DELETE', headers: HEADERS });
     fetchData();
     setItemToDelete(null);
     setIsLoading(false);
@@ -333,10 +409,20 @@ export default function App() {
 
       <div className="max-w-7xl mx-auto p-4 sm:p-6 grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className={`${isMobileMenuOpen ? 'block' : 'hidden'} md:block space-y-2 mb-4 md:mb-0 transition-all`}>
-          <NavBtn active={activeTab === 'nova_viagem'} onClick={() => {setActiveTab('nova_viagem'); setIsMobileMenuOpen(false);}} icon={<Briefcase size={18}/>} label="Criar Viagem" />
-          <NavBtn active={activeTab === 'nova'} onClick={() => {setActiveTab('nova'); setIsMobileMenuOpen(false);}} icon={<Receipt size={18}/>} label="Lançar Despesa" />
-          <NavBtn active={activeTab === 'viagens'} onClick={() => {setActiveTab('viagens'); setIsMobileMenuOpen(false);}} icon={<Plane size={18}/>} label="Minhas Viagens" />
-          <NavBtn active={activeTab === 'minhas_despesas'} onClick={() => {setActiveTab('minhas_despesas'); setIsMobileMenuOpen(false);}} icon={<FileText size={18}/>} label="Minhas Despesas" />
+          {currentUser.role !== 'comercial' && (
+            <>
+              <NavBtn active={activeTab === 'nova_viagem'} onClick={() => {setActiveTab('nova_viagem'); setIsMobileMenuOpen(false);}} icon={<Briefcase size={18}/>} label="Criar Viagem" />
+              <NavBtn active={activeTab === 'nova'} onClick={() => {setActiveTab('nova'); setIsMobileMenuOpen(false);}} icon={<Receipt size={18}/>} label="Lançar Despesa" />
+              <NavBtn active={activeTab === 'viagens'} onClick={() => {setActiveTab('viagens'); setIsMobileMenuOpen(false);}} icon={<Plane size={18}/>} label="Minhas Viagens" />
+              <NavBtn active={activeTab === 'minhas_despesas'} onClick={() => {setActiveTab('minhas_despesas'); setIsMobileMenuOpen(false);}} icon={<FileText size={18}/>} label="Minhas Despesas" />
+            </>
+          )}
+          {currentUser.role === 'comercial' && (
+            <>
+              <NavBtn active={activeTab === 'nova_reserva'} onClick={() => {setActiveTab('nova_reserva'); setIsMobileMenuOpen(false);}} icon={<Briefcase size={18}/>} label="Nova Reserva" />
+              <NavBtn active={activeTab === 'minhas_reservas'} onClick={() => {setActiveTab('minhas_reservas'); setIsMobileMenuOpen(false);}} icon={<FileText size={18}/>} label="Minhas Reservas" />
+            </>
+          )}
           {currentUser.role === 'gestor' && (
             <div className="pt-4 md:pt-6 border-t border-slate-200 mt-4">
               <div className="pb-2 px-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-left">Gestor</div>
@@ -344,6 +430,7 @@ export default function App() {
                 <NavBtn active={activeTab === 'aprovacoes'} onClick={() => {setActiveTab('aprovacoes'); setIsMobileMenuOpen(false);}} icon={<CheckCircle size={18}/>} label="Aprovações" badge={expensesForManager.length} />
                 <NavBtn active={activeTab === 'historico_vendedores'} onClick={() => {setActiveTab('historico_vendedores'); setIsMobileMenuOpen(false);}} icon={<History size={18}/>} label="Vendedores" />
                 <NavBtn active={activeTab === 'fechamento'} onClick={() => {setActiveTab('fechamento'); setIsMobileMenuOpen(false);}} icon={<BarChart3 size={18}/>} label="Fechamento Mensal" />
+                <NavBtn active={activeTab === 'reservas_geral'} onClick={() => {setActiveTab('reservas_geral'); setIsMobileMenuOpen(false);}} icon={<Briefcase size={18}/>} label="Reservas (Priscila)" />
                 <NavBtn active={activeTab === 'equipa'} onClick={() => {setActiveTab('equipa'); setIsMobileMenuOpen(false);}} icon={<Users size={18}/>} label="Gerir Equipa" />
               </div>
             </div>
@@ -388,6 +475,9 @@ export default function App() {
 
           {activeTab === 'fechamento' && <MonthlyClosing expenses={expenses} trips={trips} onDownloadExcel={handleDownloadExcel} onDownloadZip={handleDownloadZip} zippingState={zippingState} />}
           {activeTab === 'equipa' && <TeamManagement users={users} onAddUser={handleAddUser} onDeleteUser={(id) => setItemToDelete({ type: 'user', id })} loading={isLoading} />}
+          {activeTab === 'nova_reserva' && <ReservaForm vendedores={users.filter(u => u.role === 'vendedor')} onExtract={handleExtractReserva} onSubmit={handleAddReserva} isExtracting={isExtracting} loading={isLoading} />}
+          {activeTab === 'minhas_reservas' && <ReservaList data={reservas.filter(r => r.userId === currentUser.id)} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Minhas Reservas" />}
+          {activeTab === 'reservas_geral' && <ReservaList data={reservas} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Todas as Reservas" showOwner />}
         </div>
       </div>
 
@@ -702,6 +792,146 @@ function TeamManagement({ users, onAddUser, onDeleteUser, loading }) {
         <button disabled={loading} className="bg-orange-600 text-white p-4 rounded-2xl font-black text-sm uppercase tracking-widest shadow-lg shadow-orange-100 transition-all hover:bg-orange-700 active:scale-95"><UserPlus size={18} className="inline mr-2"/> ADICIONAR</button>
       </form>
       <div className="divide-y divide-slate-100 text-left">{users.map(u => (<div key={u.id} className="p-4 flex justify-between items-center hover:bg-slate-50 transition-colors text-left"><div><div className="font-black text-slate-800">{u.name}</div><div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{u.role}</div></div><button onClick={()=>onDeleteUser(u.id)} disabled={u.role==='gestor'} className="p-3 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={20}/></button></div>))}</div>
+    </div>
+  );
+}
+
+function ReservaForm({ vendedores = [], onExtract, onSubmit, isExtracting, loading }) {
+  const [form, setForm] = useState({ tipo: 'Hotel', fornecedor: '', valor: '', dataInicio: '', dataFim: '', local: '', cliente: '', observacoes: '', vendedorId: '', vendedorNome: '' });
+  const [file, setFile] = useState(null);
+  const [receiptName, setReceiptName] = useState(null);
+  const [rawExtraction, setRawExtraction] = useState(null);
+  const [extractedOnce, setExtractedOnce] = useState(false);
+
+  const handleExtractClick = async () => {
+    if (!file) return alert("Anexe o comprovativo primeiro.");
+    const result = await onExtract(file, form.tipo);
+    setReceiptName(result.receiptName);
+    setRawExtraction(result.rawExtraction || null);
+    setExtractedOnce(true);
+    if (result.extracted) {
+      setForm(f => ({
+        ...f,
+        fornecedor: result.extracted.fornecedor || f.fornecedor,
+        valor: result.extracted.valor ?? f.valor,
+        dataInicio: result.extracted.data_inicio || f.dataInicio,
+        dataFim: result.extracted.data_fim || f.dataFim,
+        local: result.extracted.local || f.local,
+        cliente: result.extracted.cliente || f.cliente,
+      }));
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!file) return alert("Anexe o comprovativo.");
+    if (!receiptName) return alert("Toque em 'Extrair dados com IA' primeiro (isso também envia o anexo).");
+    if (await onSubmit(form, receiptName, rawExtraction)) {
+      setForm({ tipo: 'Hotel', fornecedor: '', valor: '', dataInicio: '', dataFim: '', local: '', cliente: '', observacoes: '', vendedorId: '', vendedorNome: '' });
+      setFile(null); setReceiptName(null); setRawExtraction(null); setExtractedOnce(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="bg-white p-6 sm:p-10 rounded-[40px] shadow-sm border border-slate-100 space-y-6 text-left animate-in fade-in duration-300">
+      <div className="border-b pb-4 flex items-center gap-3"><Briefcase className="text-blue-500" size={28}/><h2 className="font-black text-xl sm:text-2xl text-slate-800 tracking-tight">Nova Reserva</h2></div>
+
+      <div className="bg-blue-50 p-6 rounded-3xl border border-blue-100 text-left">
+        <label className="text-[10px] font-black text-blue-800 uppercase block mb-2 tracking-widest">Vendedor Responsável</label>
+        <select className="w-full p-4 border border-blue-200 rounded-2xl bg-white font-bold outline-none" value={form.vendedorId} onChange={e => {
+          const v = vendedores.find(x => x.id === e.target.value);
+          setForm({...form, vendedorId: e.target.value, vendedorNome: v ? v.name : ''});
+        }} required>
+          <option value="">-- Selecionar Vendedor --</option>
+          {vendedores.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+        </select>
+      </div>
+
+      <div className="space-y-2 text-left">
+        <label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Tipo de Reserva</label>
+        <div className="grid grid-cols-3 gap-3">
+          {RESERVA_TIPOS.map(t => (
+            <button type="button" key={t} onClick={() => setForm({...form, tipo: t})} className={`p-4 rounded-2xl font-black text-xs uppercase tracking-widest border transition-all ${form.tipo === t ? 'bg-blue-600 text-white border-blue-600 shadow-lg' : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'}`}>{t}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="border-4 border-dashed p-8 rounded-3xl text-center bg-slate-50 hover:bg-blue-50/30 transition-all">
+        <input type="file" onChange={e => { setFile(e.target.files[0]); setReceiptName(null); setExtractedOnce(false); }} className="hidden" id="reservafile" accept="application/pdf,image/*" />
+        <label htmlFor="reservafile" className="cursor-pointer flex flex-col items-center"><Upload className="text-blue-500 mb-2" size={36} /><span className="text-slate-800 font-black tracking-tight">{file ? file.name : "Toque para anexar o comprovativo (PDF ou imagem)"}</span></label>
+      </div>
+
+      <button type="button" onClick={handleExtractClick} disabled={!file || isExtracting} className="w-full bg-indigo-600 text-white p-4 rounded-2xl font-black text-sm hover:bg-indigo-700 transition-all shadow-lg uppercase tracking-widest disabled:opacity-40 flex items-center justify-center gap-2">
+        {isExtracting ? <><Clock size={18} className="animate-spin"/> Extraindo dados com IA...</> : <><FileText size={18}/> Extrair dados com IA</>}
+      </button>
+      {extractedOnce && !isExtracting && <p className="text-[11px] text-slate-400 italic text-center -mt-3">Revise os campos abaixo antes de salvar — a IA pode errar.</p>}
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-left">
+        <div className="space-y-2"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Fornecedor</label><input type="text" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.fornecedor} onChange={e => setForm({...form, fornecedor: e.target.value})} required /></div>
+        <div className="space-y-2"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Valor (R$)</label><input type="number" step="0.01" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none font-bold" value={form.valor} onChange={e => setForm({...form, valor: e.target.value})} required /></div>
+        <div className="space-y-2"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">{form.tipo === 'Hotel' ? 'Check-in' : 'Início do Período'}</label><input type="date" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.dataInicio} onChange={e => setForm({...form, dataInicio: e.target.value})} required /></div>
+        <div className="space-y-2"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">{form.tipo === 'Hotel' ? 'Check-out' : 'Fim do Período'}</label><input type="date" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.dataFim} onChange={e => setForm({...form, dataFim: e.target.value})} /></div>
+        <div className="space-y-2"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Local</label><input type="text" list="cidades" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.local} onChange={e => setForm({...form, local: e.target.value})} /><datalist id="cidades">{BRAZILIAN_CITIES.map(c => <option key={c} value={c} />)}</datalist></div>
+        <div className="space-y-2"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Cliente / Passageiro</label><input type="text" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.cliente} onChange={e => setForm({...form, cliente: e.target.value})} /></div>
+      </div>
+      <div className="space-y-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block ml-1">Observações</label><input type="text" className="w-full p-4 border border-slate-200 rounded-2xl bg-slate-50 outline-none" value={form.observacoes} onChange={e => setForm({...form, observacoes: e.target.value})} /></div>
+
+      <button disabled={loading || isExtracting} className="w-full bg-slate-900 text-white p-5 rounded-2xl font-black text-lg hover:bg-blue-600 transition-all uppercase tracking-widest shadow-xl">SALVAR RESERVA</button>
+    </form>
+  );
+}
+
+function ReservaList({ data, onUpdateStatus, onViewAttachment, onDeleteReserva, title, showOwner }) {
+  // Agrupa por vendedor (ou "Sem vendedor") e ordena cada grupo por data_inicio (mais recente primeiro).
+  const groups = {};
+  data.forEach(r => {
+    const key = r.vendedor_nome || 'Sem vendedor definido';
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(r);
+  });
+  const groupNames = Object.keys(groups).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  groupNames.forEach(name => {
+    groups[name].sort((a, b) => (b.data_inicio || '').localeCompare(a.data_inicio || ''));
+  });
+
+  return (
+    <div className="space-y-6 text-left animate-in fade-in duration-300">
+      <div className="flex justify-between items-center">
+        <h2 className="font-black text-lg text-slate-800 tracking-tight">{title}</h2>
+        <span className="text-xs font-black text-slate-400 bg-slate-100 px-3 py-1 rounded-lg">{data.length} reserva(s)</span>
+      </div>
+      {data.length === 0 ? (
+        <div className="bg-white p-10 rounded-3xl text-center text-slate-300 italic uppercase text-[10px] font-black tracking-widest border border-slate-100 shadow-sm">Nenhuma reserva encontrada</div>
+      ) : groupNames.map(name => (
+        <div key={name} className="bg-white rounded-3xl border border-slate-100 overflow-hidden shadow-sm">
+          <div className="p-5 border-b bg-slate-50 flex justify-between items-center">
+            <div className="flex items-center gap-3"><div className="bg-blue-100 p-2 rounded-xl"><User size={18} className="text-blue-600"/></div><h3 className="font-black text-slate-800 uppercase tracking-tight text-sm">{name}</h3></div>
+            <span className="text-[10px] font-black text-slate-400 bg-white px-3 py-1 rounded-lg border border-slate-200">{groups[name].length}</span>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {groups[name].map(r => (
+              <div key={r.id} className="p-5 flex flex-col lg:flex-row lg:justify-between lg:items-center gap-4 hover:bg-slate-50 transition-all group">
+                <div className="flex-1 text-left">
+                  {showOwner && <div className="font-black text-blue-600 text-[10px] mb-1 uppercase tracking-widest">Lançado por {r.userName}</div>}
+                  <div className="flex items-center gap-2 text-slate-800 font-bold">{r.fornecedor || 'Sem fornecedor'} <span className="text-[10px] text-slate-400 uppercase font-black px-2 border rounded-md border-slate-200">{r.tipo}</span> {r.extraido_automaticamente && <span className="text-[9px] text-indigo-500 font-black uppercase px-2 border rounded-md border-indigo-100 bg-indigo-50">IA</span>}</div>
+                  <div className="text-xs text-slate-500 mt-1 flex items-center gap-1"><Calendar size={12}/> {formatDateDisplay(r.data_inicio)}{r.data_fim ? ` → ${formatDateDisplay(r.data_fim)}` : ''} {r.local ? `· ${r.local}` : ''}</div>
+                  {r.cliente && <div className="text-xs text-slate-400 italic mt-0.5">Cliente: {r.cliente}</div>}
+                </div>
+                <div className="flex items-center gap-3">
+                  <div className="font-black text-lg text-slate-700">R$ {r.valor ? parseFloat(r.valor).toFixed(2) : '0.00'}</div>
+                  <select value={r.status} onChange={e => onUpdateStatus(r.id, e.target.value)} className={`text-[10px] font-black uppercase px-3 py-2 rounded-xl border outline-none ${RESERVA_STATUS_COLORS[r.status] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                    <option value="Pendente">Pendente</option>
+                    <option value="Confirmada">Confirmada</option>
+                    <option value="Cancelada">Cancelada</option>
+                  </select>
+                  {r.receiptName && <button onClick={() => onViewAttachment({ name: r.receiptName, userId: `reservas/${r.userId}` })} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Eye size={20}/></button>}
+                  <button onClick={() => onDeleteReserva(r.id)} className="p-3 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={18}/></button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
