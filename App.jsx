@@ -80,6 +80,7 @@ export default function App() {
   const [expenseToEdit, setExpenseToEdit] = useState(null);
   const [tripToEdit, setTripToEdit] = useState(null);
   const [itemToDelete, setItemToDelete] = useState(null); 
+  const [monthToClose, setMonthToClose] = useState(null);
 
   const fetchData = async () => {
     try {
@@ -307,6 +308,19 @@ export default function App() {
     setIsLoading(false);
   };
 
+  const handleConfirmCloseMonth = async () => {
+    if (!monthToClose) return;
+    setIsLoading(true);
+    const toClose = expenses.filter(e => e.userId === currentUser.id && e.month === monthToClose && e.status === 'Aprovado');
+    await Promise.all(toClose.map(e =>
+      fetch(`${ENDPOINT_EXPENSES}?id=eq.${e.id}`, { method: 'PATCH', headers: HEADERS, body: JSON.stringify({ status: 'Fechado' }) })
+    ));
+    await fetchData();
+    setIsLoading(false);
+    setMonthToClose(null);
+    setSystemMessage({ title: 'Mês Fechado', text: `Suas despesas aprovadas de ${monthToClose} foram fechadas.` });
+  };
+
   const handleUpdateStatus = async (id, newStatus) => {
     await fetch(`${ENDPOINT_EXPENSES}?id=eq.${id}`, { method: 'PATCH', headers: HEADERS, body: JSON.stringify({ status: newStatus }) });
     fetchData(); 
@@ -490,7 +504,7 @@ export default function App() {
           {activeTab === 'nova_viagem' && <TripForm onSubmit={handleAddTrip} loading={isLoading} />}
           {activeTab === 'nova' && <ExpenseForm onSubmit={handleAddExpense} trips={trips.filter(t => t.userId === currentUser.id && getComputedTripStatus(t) !== 'Enviada')} loading={isLoading} />}
           {activeTab === 'minhas_despesas' && <ExpenseList data={expenses.filter(e => e.userId === currentUser.id)} isGestor={false} trips={trips} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} title="Minhas Despesas" />}
-          {activeTab === 'meu_fechamento' && <MyMonthlyClosing expenses={expenses.filter(e => e.userId === currentUser.id)} onDownloadExcel={handleDownloadMyExcel} onDownloadZip={handleDownloadMyZip} zippingState={zippingState} />}
+          {activeTab === 'meu_fechamento' && <MyMonthlyClosing expenses={expenses.filter(e => e.userId === currentUser.id)} onDownloadExcel={handleDownloadMyExcel} onDownloadZip={handleDownloadMyZip} onCloseMonth={(month) => setMonthToClose(month)} zippingState={zippingState} />}
           {activeTab === 'aprovacoes' && <ExpenseList data={expensesForManager} isGestor={true} trips={trips} onUpdateStatus={handleUpdateStatus} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} showAll title="Aguardando Aprovação" />}
           {activeTab === 'viagens' && <TripsList trips={trips.filter(t => t.userId === currentUser.id)} expenses={expenses} getComputedTripStatus={getComputedTripStatus} onViewTrip={(trip) => { setSelectedTrip(trip); setActiveTab('detalhes_viagem'); }} />}
           
@@ -535,6 +549,7 @@ export default function App() {
       {expenseToEdit && <EditExpenseModal expense={expenseToEdit} trips={trips.filter(t => t.userId === expenseToEdit.userId)} onSave={handleEditExpenseSave} onClose={() => setExpenseToEdit(null)} loading={isLoading} />}
       {tripToEdit && <EditTripModal trip={tripToEdit} onSave={handleEditTripSave} onClose={() => setTripToEdit(null)} loading={isLoading} />}
       {itemToDelete && <ConfirmModal item={itemToDelete} onConfirm={executeDeletion} onClose={() => setItemToDelete(null)} loading={isLoading} />}
+      {monthToClose && <CloseMonthModal month={monthToClose} onConfirm={handleConfirmCloseMonth} onClose={() => setMonthToClose(null)} loading={isLoading} />}
       {systemMessage && <MessageModal msg={systemMessage} onClose={() => setSystemMessage(null)} />}
     </div>
   );
@@ -619,7 +634,7 @@ function TripDetailsView({ trip, expenses, getComputedTripStatus, currentUser, o
   );
 }
 
-function MyMonthlyClosing({ expenses, onDownloadExcel, onDownloadZip, zippingState }) {
+function MyMonthlyClosing({ expenses, onDownloadExcel, onDownloadZip, onCloseMonth, zippingState }) {
   const [selectedMonth, setSelectedMonth] = useState(null);
   const months = [...new Set(expenses.map(e => e.month).filter(Boolean))].sort().reverse();
   return (
@@ -631,17 +646,19 @@ function MyMonthlyClosing({ expenses, onDownloadExcel, onDownloadZip, zippingSta
             ? <div className="bg-white p-6 rounded-3xl text-center text-slate-300 italic uppercase text-[10px] font-black tracking-widest border border-slate-100">Sem despesas lançadas</div>
             : months.map(m => <button key={m} onClick={() => setSelectedMonth(m)} className={`w-full p-6 rounded-3xl border transition-all text-left flex justify-between items-center ${selectedMonth === m ? 'bg-blue-600 text-white border-blue-600 shadow-xl' : 'bg-white border-slate-100 text-slate-800'}`}>{m}<Calendar size={20}/></button>)}
         </div>
-        <div className="lg:col-span-2 text-left">{selectedMonth ? <MyClosingDetails month={selectedMonth} expenses={expenses} onExcel={() => onDownloadExcel(selectedMonth)} onZip={() => onDownloadZip(selectedMonth)} zippingState={zippingState} /> : <div className="bg-white h-64 rounded-3xl border border-slate-100 flex items-center justify-center text-slate-400 font-black uppercase tracking-widest text-xs italic">Selecione um mês à esquerda</div>}</div>
+        <div className="lg:col-span-2 text-left">{selectedMonth ? <MyClosingDetails month={selectedMonth} expenses={expenses} onExcel={() => onDownloadExcel(selectedMonth)} onZip={() => onDownloadZip(selectedMonth)} onClose={() => onCloseMonth(selectedMonth)} zippingState={zippingState} /> : <div className="bg-white h-64 rounded-3xl border border-slate-100 flex items-center justify-center text-slate-400 font-black uppercase tracking-widest text-xs italic">Selecione um mês à esquerda</div>}</div>
       </div>
     </div>
   );
 }
 
-function MyClosingDetails({ month, expenses, onExcel, onZip, zippingState }) {
+function MyClosingDetails({ month, expenses, onExcel, onZip, onClose, zippingState }) {
   const mine = expenses.filter(e => e.month === month && e.status !== 'Reprovado');
   const refund = mine.filter(e => e.isRefundable).reduce((a, e) => a + (parseFloat(e.amount) || 0), 0);
   const corp = mine.filter(e => !e.isRefundable).reduce((a, e) => a + (parseFloat(e.amount) || 0), 0);
   const isZipping = zippingState.active && zippingState.label === 'MEU_RELATORIO';
+  const pendingApproved = mine.filter(e => e.status === 'Aprovado').length;
+  const alreadyClosed = mine.length > 0 && pendingApproved === 0 && mine.some(e => e.status === 'Fechado');
   return (
     <div className="bg-white p-6 sm:p-10 rounded-3xl border border-slate-100 shadow-sm text-left animate-in fade-in duration-300">
       <div className="flex flex-col sm:flex-row justify-between items-start mb-8 border-b pb-6 gap-4 text-left">
@@ -650,16 +667,36 @@ function MyClosingDetails({ month, expenses, onExcel, onZip, zippingState }) {
           <h3 className="font-black text-3xl text-slate-800">{month}</h3>
           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">{mine.length} Lançamentos</p>
         </div>
-        <div className="flex gap-3 w-full sm:w-auto">
+        <div className="flex flex-wrap gap-3 w-full sm:w-auto">
           <button onClick={onExcel} className="flex-1 sm:flex-none bg-emerald-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg tracking-widest hover:bg-emerald-600 transition-all"><Download size={14}/> Planilha (XLSX)</button>
           <button onClick={onZip} disabled={isZipping} className="flex-1 sm:flex-none bg-indigo-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-indigo-600 transition-all">
             {isZipping ? <Clock size={14} className="animate-spin"/> : <Archive size={14}/>} Comprovantes (ZIP)
           </button>
+          {pendingApproved > 0 && (
+            <button onClick={onClose} className="flex-1 sm:flex-none bg-purple-600 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg tracking-widest hover:bg-purple-700 transition-all"><Lock size={14}/> Fechar Mês</button>
+          )}
         </div>
       </div>
+      {alreadyClosed && <div className="mb-6 bg-purple-50 border border-purple-100 text-purple-700 text-[10px] font-black uppercase tracking-widest px-4 py-3 rounded-2xl flex items-center gap-2"><Lock size={14}/> Este mês já está fechado. As despesas aprovadas não podem mais ser editadas.</div>}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div className="bg-green-50 rounded-3xl p-6 border border-green-100 flex items-center justify-between"><div><p className="text-[10px] font-black text-green-600/70 uppercase tracking-widest mb-1">A Reembolsar</p><div className="font-black text-3xl text-green-600 tabular-nums">R$ {refund.toFixed(2)}</div></div><Wallet size={40} className="text-green-200"/></div>
         <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100 flex items-center justify-between"><div><p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Cartão Empresa</p><div className="font-black text-3xl text-slate-600 tabular-nums">R$ {corp.toFixed(2)}</div></div><CreditCard size={40} className="text-slate-200"/></div>
+      </div>
+    </div>
+  );
+}
+
+function CloseMonthModal({ month, onConfirm, onClose, loading }) {
+  return (
+    <div className="fixed inset-0 bg-slate-900/90 flex items-center justify-center p-4 z-50 backdrop-blur-md text-center">
+      <div className="bg-white rounded-[40px] max-w-sm w-full p-10 shadow-2xl animate-in zoom-in-95 duration-200">
+        <div className="bg-purple-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6"><Lock size={40} className="text-purple-600" /></div>
+        <h3 className="font-black text-2xl text-slate-800 mb-3 uppercase tracking-tighter text-center">Fechar {month}?</h3>
+        <p className="text-slate-500 text-sm mb-8 leading-relaxed italic text-center">Suas despesas aprovadas deste mês serão marcadas como fechadas e não poderão mais ser editadas ou excluídas.</p>
+        <div className="flex flex-col gap-3">
+          <button onClick={onConfirm} disabled={loading} className="w-full bg-purple-600 text-white px-8 py-5 rounded-2xl font-black uppercase text-xs hover:bg-purple-700 shadow-xl tracking-widest transition-all active:scale-95">SIM, FECHAR</button>
+          <button onClick={onClose} disabled={loading} className="w-full bg-slate-100 text-slate-600 px-8 py-5 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 transition-all">CANCELAR</button>
+        </div>
       </div>
     </div>
   );
@@ -688,9 +725,10 @@ function ExpenseList({ data, isGestor, trips = [], onUpdateStatus, onViewAttachm
                <div className="text-right"><div className={`font-black text-xl tabular-nums ${exp.isRefundable ? 'text-slate-900' : 'text-slate-400 line-through decoration-slate-300'}`}>R$ {parseFloat(exp.amount).toFixed(2)}</div><div className={`text-[9px] font-black uppercase mt-1 ${exp.status === 'Enviado' ? 'text-blue-500' : 'text-green-600'}`}>{exp.status}</div></div>
                <div className="flex gap-2">
                  <button onClick={() => onViewAttachment({ name: exp.receiptName, userId: exp.userId })} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Eye size={20}/></button>
-                 {onEditExpense && <button onClick={() => onEditExpense(exp)} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Edit3 size={20}/></button>}
+                 {(isGestor || exp.status !== 'Fechado') && onEditExpense && <button onClick={() => onEditExpense(exp)} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Edit3 size={20}/></button>}
                  {isGestor && exp.status === 'Enviado' && <button onClick={() => onUpdateStatus(exp.id, 'Aprovado')} className="p-3 bg-green-500 rounded-2xl text-white shadow-lg shadow-green-100 transition-all active:scale-95"><CheckCircle size={20}/></button>}
-                 <button onClick={() => onDeleteExpense(exp.id)} className="p-3 bg-red-50 rounded-2xl text-red-600 hover:bg-red-600 hover:text-white transition-all shadow-sm"><Trash2 size={20}/></button>
+                 {(isGestor || exp.status !== 'Fechado') && <button onClick={() => onDeleteExpense(exp.id)} className="p-3 bg-red-50 rounded-2xl text-red-600 hover:bg-red-600 hover:text-white transition-all shadow-sm"><Trash2 size={20}/></button>}
+                 {!isGestor && exp.status === 'Fechado' && <div className="p-3 bg-purple-50 rounded-2xl text-purple-400" title="Mês fechado"><Lock size={20}/></div>}
                </div>
             </div>
           </div>
