@@ -463,6 +463,7 @@ export default function App() {
               <NavBtn active={activeTab === 'nova'} onClick={() => {setActiveTab('nova'); setIsMobileMenuOpen(false);}} icon={<Receipt size={18}/>} label="Lançar Despesa" />
               <NavBtn active={activeTab === 'viagens'} onClick={() => {setActiveTab('viagens'); setIsMobileMenuOpen(false);}} icon={<Plane size={18}/>} label="Minhas Viagens" />
               <NavBtn active={activeTab === 'minhas_despesas'} onClick={() => {setActiveTab('minhas_despesas'); setIsMobileMenuOpen(false);}} icon={<FileText size={18}/>} label="Minhas Despesas" />
+              <NavBtn active={activeTab === 'meu_fechamento'} onClick={() => {setActiveTab('meu_fechamento'); setIsMobileMenuOpen(false);}} icon={<BarChart3 size={18}/>} label="Meu Fechamento" />
             </>
           )}
           {currentUser.role === 'comercial' && (
@@ -488,17 +489,8 @@ export default function App() {
         <div className="md:col-span-3 text-left">
           {activeTab === 'nova_viagem' && <TripForm onSubmit={handleAddTrip} loading={isLoading} />}
           {activeTab === 'nova' && <ExpenseForm onSubmit={handleAddExpense} trips={trips.filter(t => t.userId === currentUser.id && getComputedTripStatus(t) !== 'Enviada')} loading={isLoading} />}
-          {activeTab === 'minhas_despesas' && (
-            <div className="space-y-6">
-              <MyReportExport
-                expenses={expenses.filter(e => e.userId === currentUser.id)}
-                onDownloadExcel={handleDownloadMyExcel}
-                onDownloadZip={handleDownloadMyZip}
-                zippingState={zippingState}
-              />
-              <ExpenseList data={expenses.filter(e => e.userId === currentUser.id)} isGestor={false} trips={trips} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} title="Minhas Despesas" />
-            </div>
-          )}
+          {activeTab === 'minhas_despesas' && <ExpenseList data={expenses.filter(e => e.userId === currentUser.id)} isGestor={false} trips={trips} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} title="Minhas Despesas" />}
+          {activeTab === 'meu_fechamento' && <MyMonthlyClosing expenses={expenses.filter(e => e.userId === currentUser.id)} onDownloadExcel={handleDownloadMyExcel} onDownloadZip={handleDownloadMyZip} zippingState={zippingState} />}
           {activeTab === 'aprovacoes' && <ExpenseList data={expensesForManager} isGestor={true} trips={trips} onUpdateStatus={handleUpdateStatus} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} showAll title="Aguardando Aprovação" />}
           {activeTab === 'viagens' && <TripsList trips={trips.filter(t => t.userId === currentUser.id)} expenses={expenses} getComputedTripStatus={getComputedTripStatus} onViewTrip={(trip) => { setSelectedTrip(trip); setActiveTab('detalhes_viagem'); }} />}
           
@@ -627,33 +619,48 @@ function TripDetailsView({ trip, expenses, getComputedTripStatus, currentUser, o
   );
 }
 
-function MyReportExport({ expenses, onDownloadExcel, onDownloadZip, zippingState }) {
+function MyMonthlyClosing({ expenses, onDownloadExcel, onDownloadZip, zippingState }) {
+  const [selectedMonth, setSelectedMonth] = useState(null);
   const months = [...new Set(expenses.map(e => e.month).filter(Boolean))].sort().reverse();
-  const [month, setMonth] = useState(months[0] || '');
-
-  useEffect(() => {
-    if (!month && months.length > 0) setMonth(months[0]);
-  }, [months.join(',')]);
-
-  if (months.length === 0) return null;
-
-  const isZipping = zippingState.active && zippingState.label === 'MEU_RELATORIO';
-
   return (
-    <div className="bg-white rounded-3xl border border-slate-100 p-6 shadow-sm text-left">
-      <h3 className="font-black text-slate-800 uppercase tracking-tight text-sm mb-4 flex items-center gap-2"><FileText size={18} className="text-blue-500"/> Meu Relatório de Despesas</h3>
-      <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
-        <select value={month} onChange={e => setMonth(e.target.value)} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-sm flex-1">
-          {months.map(m => <option key={m} value={m}>{m}</option>)}
-        </select>
-        <button onClick={() => onDownloadExcel(month)} className="flex-1 sm:flex-none bg-emerald-500 text-white px-5 py-4 rounded-2xl font-black uppercase text-[10px] flex items-center justify-center gap-2 shadow-lg tracking-widest hover:bg-emerald-600 transition-all">
-          <Download size={14}/> Planilha (XLSX)
-        </button>
-        <button onClick={() => onDownloadZip(month)} disabled={isZipping} className="flex-1 sm:flex-none bg-indigo-500 text-white px-5 py-4 rounded-2xl font-black uppercase text-[10px] flex items-center justify-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-indigo-600 transition-all">
-          {isZipping ? <Clock size={14} className="animate-spin"/> : <Archive size={14}/>} Comprovantes (ZIP)
-        </button>
+    <div className="space-y-6 text-left animate-in fade-in duration-300">
+      <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm flex items-center gap-4"><div className="bg-blue-100 p-3 rounded-2xl"><BarChart3 className="text-blue-600" size={28}/></div><h2 className="font-black text-xl text-slate-800 tracking-tight text-left">Meu Fechamento</h2></div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 text-left">
+        <div className="lg:col-span-1 space-y-3">
+          {months.length === 0
+            ? <div className="bg-white p-6 rounded-3xl text-center text-slate-300 italic uppercase text-[10px] font-black tracking-widest border border-slate-100">Sem despesas lançadas</div>
+            : months.map(m => <button key={m} onClick={() => setSelectedMonth(m)} className={`w-full p-6 rounded-3xl border transition-all text-left flex justify-between items-center ${selectedMonth === m ? 'bg-blue-600 text-white border-blue-600 shadow-xl' : 'bg-white border-slate-100 text-slate-800'}`}>{m}<Calendar size={20}/></button>)}
+        </div>
+        <div className="lg:col-span-2 text-left">{selectedMonth ? <MyClosingDetails month={selectedMonth} expenses={expenses} onExcel={() => onDownloadExcel(selectedMonth)} onZip={() => onDownloadZip(selectedMonth)} zippingState={zippingState} /> : <div className="bg-white h-64 rounded-3xl border border-slate-100 flex items-center justify-center text-slate-400 font-black uppercase tracking-widest text-xs italic">Selecione um mês à esquerda</div>}</div>
       </div>
-      <p className="text-[10px] text-slate-400 italic mt-3">Inclui todas as despesas do mês selecionado (exceto reprovadas).</p>
+    </div>
+  );
+}
+
+function MyClosingDetails({ month, expenses, onExcel, onZip, zippingState }) {
+  const mine = expenses.filter(e => e.month === month && e.status !== 'Reprovado');
+  const refund = mine.filter(e => e.isRefundable).reduce((a, e) => a + (parseFloat(e.amount) || 0), 0);
+  const corp = mine.filter(e => !e.isRefundable).reduce((a, e) => a + (parseFloat(e.amount) || 0), 0);
+  const isZipping = zippingState.active && zippingState.label === 'MEU_RELATORIO';
+  return (
+    <div className="bg-white p-6 sm:p-10 rounded-3xl border border-slate-100 shadow-sm text-left animate-in fade-in duration-300">
+      <div className="flex flex-col sm:flex-row justify-between items-start mb-8 border-b pb-6 gap-4 text-left">
+        <div className="text-left">
+          <p className="text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Mês Referência</p>
+          <h3 className="font-black text-3xl text-slate-800">{month}</h3>
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">{mine.length} Lançamentos</p>
+        </div>
+        <div className="flex gap-3 w-full sm:w-auto">
+          <button onClick={onExcel} className="flex-1 sm:flex-none bg-emerald-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg tracking-widest hover:bg-emerald-600 transition-all"><Download size={14}/> Planilha (XLSX)</button>
+          <button onClick={onZip} disabled={isZipping} className="flex-1 sm:flex-none bg-indigo-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-indigo-600 transition-all">
+            {isZipping ? <Clock size={14} className="animate-spin"/> : <Archive size={14}/>} Comprovantes (ZIP)
+          </button>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="bg-green-50 rounded-3xl p-6 border border-green-100 flex items-center justify-between"><div><p className="text-[10px] font-black text-green-600/70 uppercase tracking-widest mb-1">A Reembolsar</p><div className="font-black text-3xl text-green-600 tabular-nums">R$ {refund.toFixed(2)}</div></div><Wallet size={40} className="text-green-200"/></div>
+        <div className="bg-slate-50 rounded-3xl p-6 border border-slate-100 flex items-center justify-between"><div><p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-1">Cartão Empresa</p><div className="font-black text-3xl text-slate-600 tabular-nums">R$ {corp.toFixed(2)}</div></div><CreditCard size={40} className="text-slate-200"/></div>
+      </div>
     </div>
   );
 }
