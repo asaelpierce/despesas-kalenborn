@@ -312,37 +312,44 @@ export default function App() {
     fetchData(); 
   };
 
-  const generateExcelBlob = (list) => {
-    const headers = ['Vendedor', 'Data do Gasto', 'Viagem / Cliente', 'Data Início Viagem', 'Data Fim Viagem', 'Categoria', 'Valor (R$)', 'Reembolsável?', 'Descrição', 'Link'];
-    const csvRows = list.map(exp => {
+  // Gera um arquivo XLSX real (SheetJS) a partir da lista de despesas
+  const generateExcelBlob = async (list) => {
+    const XLSX = await import('https://esm.sh/xlsx@0.18.5');
+    const rows = list.map(exp => {
       const trip = trips.find(t => t.id === exp.tripId);
       const tripInfo = trip ? `${trip.client} (${trip.destination})` : 'Lançamento Avulso';
       const tripStartDate = trip ? formatDateDisplay(trip.start_date) : '-';
       const tripEndDate = trip ? formatDateDisplay(trip.end_date) : '-';
       const url = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${exp.userId}/${exp.receiptName}`;
-      return [
-        `"${exp.userName}"`, 
-        `"${formatDateDisplay(exp.date)}"`, 
-        `"${tripInfo}"`, 
-        `"${tripStartDate}"`, 
-        `"${tripEndDate}"`,
-        `"${exp.category}"`,
-        `"${parseFloat(exp.amount).toFixed(2).replace('.', ',')}"`, 
-        `"${exp.isRefundable ? 'SIM' : 'NÃO'}"`,
-        `"${exp.description}"`, 
-        `"${url}"`
-      ].join(';');
+      return {
+        'Vendedor': exp.userName,
+        'Data do Gasto': formatDateDisplay(exp.date),
+        'Viagem / Cliente': tripInfo,
+        'Data Início Viagem': tripStartDate,
+        'Data Fim Viagem': tripEndDate,
+        'Categoria': exp.category,
+        'Valor (R$)': parseFloat(exp.amount) || 0,
+        'Reembolsável?': exp.isRefundable ? 'SIM' : 'NÃO',
+        'Descrição': exp.description || '',
+        'Status': exp.status,
+        'Link Comprovante': url
+      };
     });
-    return new Blob(["\uFEFF" + headers.join(';') + '\n' + csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [{ wch: 22 }, { wch: 14 }, { wch: 28 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 32 }, { wch: 14 }, { wch: 55 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Relatório');
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    return new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   };
 
-  const handleDownloadExcel = (month) => {
+  const handleDownloadExcel = async (month) => {
     const approved = expenses.filter(e => e.month === month && (e.status === 'Aprovado' || e.status === 'Fechado'));
     if (approved.length === 0) return alert("Não existem despesas aprovadas neste mês.");
-    const blob = generateExcelBlob(approved);
+    const blob = await generateExcelBlob(approved);
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `Relatorio_Kalenborn_${month}.csv`;
+    link.download = `Relatorio_Kalenborn_${month}.xlsx`;
     link.click();
   };
 
@@ -354,8 +361,8 @@ export default function App() {
     try {
       const JSZip = (await import('https://esm.sh/jszip@3.10.1')).default;
       const zip = new JSZip();
-      const excelBlob = generateExcelBlob(approved);
-      zip.file(`Relatorio_${sellerName || 'Geral'}_${month}.csv`, excelBlob);
+      const excelBlob = await generateExcelBlob(approved);
+      zip.file(`Relatorio_${sellerName || 'Geral'}_${month}.xlsx`, excelBlob);
       let fileCount = 0;
       for (const exp of approved) {
         if (!exp.receiptName) continue;
@@ -378,6 +385,47 @@ export default function App() {
         link.download = `Anexos_Kalenborn_${sellerName || 'GERAL'}_${month}.zip`;
         link.click();
       }
+    } finally { setZippingState({ active: false, label: '' }); }
+  };
+
+  // --- Relatório individual (para o próprio vendedor tirar seu relatório) ---
+  const handleDownloadMyExcel = async (month) => {
+    const mine = expenses.filter(e => e.userId === currentUser.id && e.month === month && e.status !== 'Reprovado');
+    if (mine.length === 0) return alert("Não existem despesas neste mês.");
+    const blob = await generateExcelBlob(mine);
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `Minhas_Despesas_${currentUser.name}_${month}.xlsx`.replace(/\s+/g, '_');
+    link.click();
+  };
+
+  const handleDownloadMyZip = async (month) => {
+    const mine = expenses.filter(e => e.userId === currentUser.id && e.month === month && e.status !== 'Reprovado');
+    if (mine.length === 0) return alert("Sem despesas neste mês.");
+    setZippingState({ active: true, label: 'MEU_RELATORIO' });
+    try {
+      const JSZip = (await import('https://esm.sh/jszip@3.10.1')).default;
+      const zip = new JSZip();
+      const excelBlob = await generateExcelBlob(mine);
+      zip.file(`Relatorio_${currentUser.name}_${month}.xlsx`.replace(/\s+/g, '_'), excelBlob);
+      for (const exp of mine) {
+        if (!exp.receiptName) continue;
+        const fileUrl = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${exp.userId}/${exp.receiptName}`;
+        try {
+          const res = await fetch(fileUrl);
+          if (res.ok) {
+            const blob = await res.blob();
+            const ext = exp.receiptName.split('.').pop() || 'pdf';
+            const cleanName = `${formatDateDisplay(exp.date)}_R$${exp.amount}`.replace(/[^a-zA-Z0-9_.-]/g, '_');
+            zip.file(`comprovativos/${cleanName}.${ext}`, blob);
+          }
+        } catch (e) {}
+      }
+      const zipBlob = await zip.generateAsync({ type: "blob" });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(zipBlob);
+      link.download = `Minhas_Despesas_${currentUser.name}_${month}.zip`.replace(/\s+/g, '_');
+      link.click();
     } finally { setZippingState({ active: false, label: '' }); }
   };
 
@@ -440,7 +488,17 @@ export default function App() {
         <div className="md:col-span-3 text-left">
           {activeTab === 'nova_viagem' && <TripForm onSubmit={handleAddTrip} loading={isLoading} />}
           {activeTab === 'nova' && <ExpenseForm onSubmit={handleAddExpense} trips={trips.filter(t => t.userId === currentUser.id && getComputedTripStatus(t) !== 'Enviada')} loading={isLoading} />}
-          {activeTab === 'minhas_despesas' && <ExpenseList data={expenses.filter(e => e.userId === currentUser.id)} isGestor={false} trips={trips} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} title="Minhas Despesas" />}
+          {activeTab === 'minhas_despesas' && (
+            <div className="space-y-6">
+              <MyReportExport
+                expenses={expenses.filter(e => e.userId === currentUser.id)}
+                onDownloadExcel={handleDownloadMyExcel}
+                onDownloadZip={handleDownloadMyZip}
+                zippingState={zippingState}
+              />
+              <ExpenseList data={expenses.filter(e => e.userId === currentUser.id)} isGestor={false} trips={trips} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} title="Minhas Despesas" />
+            </div>
+          )}
           {activeTab === 'aprovacoes' && <ExpenseList data={expensesForManager} isGestor={true} trips={trips} onUpdateStatus={handleUpdateStatus} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} showAll title="Aguardando Aprovação" />}
           {activeTab === 'viagens' && <TripsList trips={trips.filter(t => t.userId === currentUser.id)} expenses={expenses} getComputedTripStatus={getComputedTripStatus} onViewTrip={(trip) => { setSelectedTrip(trip); setActiveTab('detalhes_viagem'); }} />}
           
@@ -565,6 +623,37 @@ function TripDetailsView({ trip, expenses, getComputedTripStatus, currentUser, o
         </div>
       </div>
       <ExpenseList data={expenses} isGestor={isGestor} trips={[trip]} onViewAttachment={onViewAttachment} onEditExpense={isEditable ? onEditExpense : null} onDeleteExpense={isEditable ? onDeleteExpense : null} title="Despesas Registadas" hideTripBadge />
+    </div>
+  );
+}
+
+function MyReportExport({ expenses, onDownloadExcel, onDownloadZip, zippingState }) {
+  const months = [...new Set(expenses.map(e => e.month).filter(Boolean))].sort().reverse();
+  const [month, setMonth] = useState(months[0] || '');
+
+  useEffect(() => {
+    if (!month && months.length > 0) setMonth(months[0]);
+  }, [months.join(',')]);
+
+  if (months.length === 0) return null;
+
+  const isZipping = zippingState.active && zippingState.label === 'MEU_RELATORIO';
+
+  return (
+    <div className="bg-white rounded-3xl border border-slate-100 p-6 shadow-sm text-left">
+      <h3 className="font-black text-slate-800 uppercase tracking-tight text-sm mb-4 flex items-center gap-2"><FileText size={18} className="text-blue-500"/> Meu Relatório de Despesas</h3>
+      <div className="flex flex-col sm:flex-row gap-3 sm:items-center">
+        <select value={month} onChange={e => setMonth(e.target.value)} className="p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-sm flex-1">
+          {months.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <button onClick={() => onDownloadExcel(month)} className="flex-1 sm:flex-none bg-emerald-500 text-white px-5 py-4 rounded-2xl font-black uppercase text-[10px] flex items-center justify-center gap-2 shadow-lg tracking-widest hover:bg-emerald-600 transition-all">
+          <Download size={14}/> Planilha (XLSX)
+        </button>
+        <button onClick={() => onDownloadZip(month)} disabled={isZipping} className="flex-1 sm:flex-none bg-indigo-500 text-white px-5 py-4 rounded-2xl font-black uppercase text-[10px] flex items-center justify-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-indigo-600 transition-all">
+          {isZipping ? <Clock size={14} className="animate-spin"/> : <Archive size={14}/>} Comprovantes (ZIP)
+        </button>
+      </div>
+      <p className="text-[10px] text-slate-400 italic mt-3">Inclui todas as despesas do mês selecionado (exceto reprovadas).</p>
     </div>
   );
 }
