@@ -268,6 +268,7 @@ export default function App() {
         data_inicio: formData.dataInicio || null, data_fim: formData.dataFim || null,
         local: formData.local, cliente: formData.cliente, observacoes: formData.observacoes,
         vendedor_id: formData.vendedorId || null, vendedor_nome: formData.vendedorNome || null,
+        viagem_grupo: formData.viagemGrupo || null,
         receiptName, status: 'Pendente',
         extraido_automaticamente: !!rawExtraction,
         raw_extraction: rawExtraction || null
@@ -564,7 +565,7 @@ export default function App() {
 
           {activeTab === 'fechamento' && <MonthlyClosing expenses={expenses} trips={trips} onDownloadExcel={handleDownloadExcel} onDownloadZip={handleDownloadZip} zippingState={zippingState} />}
           {activeTab === 'equipa' && <TeamManagement users={users} onAddUser={handleAddUser} onDeleteUser={(id) => setItemToDelete({ type: 'user', id })} loading={isLoading} />}
-          {activeTab === 'nova_reserva' && <ReservaForm vendedores={users.filter(u => u.role === 'vendedor')} onExtract={handleExtractReserva} onSubmit={handleAddReserva} isExtracting={isExtracting} loading={isLoading} />}
+          {activeTab === 'nova_reserva' && <ReservaForm vendedores={users.filter(u => u.role === 'vendedor')} reservasExistentes={reservas} onExtract={handleExtractReserva} onSubmit={handleAddReserva} isExtracting={isExtracting} loading={isLoading} />}
           {activeTab === 'minhas_reservas' && <ReservaList data={reservas.filter(r => r.userId === currentUser.id)} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Minhas Reservas" />}
           {activeTab === 'reservas_geral' && <ReservaList data={reservas} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Todas as Reservas" showOwner />}
         </div>
@@ -1114,12 +1115,16 @@ function TeamManagement({ users, onAddUser, onDeleteUser, loading }) {
   );
 }
 
-function ReservaForm({ vendedores = [], onExtract, onSubmit, isExtracting, loading }) {
-  const [form, setForm] = useState({ tipo: 'Hotel', fornecedor: '', valor: '', dataInicio: '', dataFim: '', local: '', cliente: '', observacoes: '', vendedorId: '', vendedorNome: '' });
+function ReservaForm({ vendedores = [], reservasExistentes = [], onExtract, onSubmit, isExtracting, loading }) {
+  const [form, setForm] = useState({ tipo: 'Hotel', fornecedor: '', valor: '', dataInicio: '', dataFim: '', local: '', cliente: '', observacoes: '', vendedorId: '', vendedorNome: '', viagemGrupo: '' });
   const [file, setFile] = useState(null);
   const [receiptName, setReceiptName] = useState(null);
   const [rawExtraction, setRawExtraction] = useState(null);
   const [extractedOnce, setExtractedOnce] = useState(false);
+
+  const gruposSugeridos = [...new Set(
+    reservasExistentes.filter(r => !form.vendedorId || r.vendedor_id === form.vendedorId).map(r => r.viagem_grupo).filter(Boolean)
+  )].sort();
 
   const handleExtractClick = async () => {
     if (!file) return alert("Anexe o comprovativo primeiro.");
@@ -1145,7 +1150,7 @@ function ReservaForm({ vendedores = [], onExtract, onSubmit, isExtracting, loadi
     if (!file) return alert("Anexe o comprovativo.");
     if (!receiptName) return alert("Toque em 'Extrair dados com IA' primeiro (isso também envia o anexo).");
     if (await onSubmit(form, receiptName, rawExtraction)) {
-      setForm({ tipo: 'Hotel', fornecedor: '', valor: '', dataInicio: '', dataFim: '', local: '', cliente: '', observacoes: '', vendedorId: '', vendedorNome: '' });
+      setForm({ tipo: 'Hotel', fornecedor: '', valor: '', dataInicio: '', dataFim: '', local: '', cliente: '', observacoes: '', vendedorId: form.vendedorId, vendedorNome: form.vendedorNome, viagemGrupo: form.viagemGrupo });
       setFile(null); setReceiptName(null); setRawExtraction(null); setExtractedOnce(false);
     }
   };
@@ -1163,6 +1168,13 @@ function ReservaForm({ vendedores = [], onExtract, onSubmit, isExtracting, loadi
           <option value="">-- Selecionar Vendedor --</option>
           {vendedores.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
         </select>
+      </div>
+
+      <div className="bg-amber-50 p-6 rounded-3xl border border-amber-100 text-left">
+        <label className="text-[10px] font-black text-amber-800 uppercase block mb-2 tracking-widest">Viagem / Grupo (opcional)</label>
+        <input type="text" list="viagens-grupo" className="w-full p-4 border border-amber-200 rounded-2xl bg-white font-bold outline-none" placeholder="Ex: Viagem Vitória - Jul/2026" value={form.viagemGrupo} onChange={e => setForm({...form, viagemGrupo: e.target.value})} />
+        <datalist id="viagens-grupo">{gruposSugeridos.map(g => <option key={g} value={g} />)}</datalist>
+        <p className="text-[10px] text-amber-700/70 italic mt-2">Use o mesmo nome em Hotel, Carro e Passagem da mesma viagem para elas aparecerem agrupadas.</p>
       </div>
 
       <div className="space-y-2 text-left">
@@ -1281,26 +1293,72 @@ function ReservaList({ data, onUpdateStatus, onViewAttachment, onDeleteReserva, 
             <span className="text-[10px] font-black text-slate-400 bg-white px-3 py-1 rounded-lg border border-slate-200">{groups[name].length}</span>
           </div>
           <div className="divide-y divide-slate-100">
-            {groups[name].map(r => (
-              <div key={r.id} className="p-5 flex flex-col lg:flex-row lg:justify-between lg:items-center gap-4 hover:bg-slate-50 transition-all group">
-                <div className="flex-1 text-left">
-                  {showOwner && <div className="font-black text-blue-600 text-[10px] mb-1 uppercase tracking-widest">Lançado por {r.userName}</div>}
-                  <div className="flex items-center gap-2 text-slate-800 font-bold">{r.fornecedor || 'Sem fornecedor'} <span className="text-[10px] text-slate-400 uppercase font-black px-2 border rounded-md border-slate-200">{r.tipo}</span> {r.extraido_automaticamente && <span className="text-[9px] text-indigo-500 font-black uppercase px-2 border rounded-md border-indigo-100 bg-indigo-50">IA</span>}</div>
-                  <div className="text-xs text-slate-500 mt-1 flex items-center gap-1"><Calendar size={12}/> {formatDateDisplay(r.data_inicio)}{r.data_fim ? ` → ${formatDateDisplay(r.data_fim)}` : ''} {r.local ? `· ${r.local}` : ''}</div>
-                  {r.cliente && <div className="text-xs text-slate-400 italic mt-0.5">Cliente: {r.cliente}</div>}
+            {(() => {
+              const items = groups[name];
+              const tripGroups = {};
+              const solo = [];
+              items.forEach(r => {
+                if (r.viagem_grupo && r.viagem_grupo.trim()) {
+                  const key = r.viagem_grupo.trim();
+                  if (!tripGroups[key]) tripGroups[key] = [];
+                  tripGroups[key].push(r);
+                } else {
+                  solo.push(r);
+                }
+              });
+              const tripKeys = Object.keys(tripGroups).sort((a, b) => {
+                const da = tripGroups[a].reduce((acc, r) => acc > (r.data_inicio || '') ? acc : (r.data_inicio || ''), '');
+                const db = tripGroups[b].reduce((acc, r) => acc > (r.data_inicio || '') ? acc : (r.data_inicio || ''), '');
+                return db.localeCompare(da);
+              });
+
+              const renderReserva = (r) => (
+                <div key={r.id} className="p-5 flex flex-col lg:flex-row lg:justify-between lg:items-center gap-4 hover:bg-slate-50 transition-all group">
+                  <div className="flex-1 text-left">
+                    {showOwner && <div className="font-black text-blue-600 text-[10px] mb-1 uppercase tracking-widest">Lançado por {r.userName}</div>}
+                    <div className="flex items-center gap-2 text-slate-800 font-bold">{r.fornecedor || 'Sem fornecedor'} <span className="text-[10px] text-slate-400 uppercase font-black px-2 border rounded-md border-slate-200">{r.tipo}</span> {r.extraido_automaticamente && <span className="text-[9px] text-indigo-500 font-black uppercase px-2 border rounded-md border-indigo-100 bg-indigo-50">IA</span>}</div>
+                    <div className="text-xs text-slate-500 mt-1 flex items-center gap-1"><Calendar size={12}/> {formatDateDisplay(r.data_inicio)}{r.data_fim ? ` → ${formatDateDisplay(r.data_fim)}` : ''} {r.local ? `· ${r.local}` : ''}</div>
+                    {r.cliente && <div className="text-xs text-slate-400 italic mt-0.5">Cliente: {r.cliente}</div>}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="font-black text-lg text-slate-700">R$ {r.valor ? parseFloat(r.valor).toFixed(2) : '0.00'}</div>
+                    <select value={r.status} onChange={e => onUpdateStatus(r.id, e.target.value)} className={`text-[10px] font-black uppercase px-3 py-2 rounded-xl border outline-none ${RESERVA_STATUS_COLORS[r.status] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>
+                      <option value="Pendente">Pendente</option>
+                      <option value="Confirmada">Confirmada</option>
+                      <option value="Cancelada">Cancelada</option>
+                    </select>
+                    {r.receiptName && <button onClick={() => onViewAttachment({ name: r.receiptName, userId: `reservas/${r.userId}` })} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Eye size={20}/></button>}
+                    <button onClick={() => onDeleteReserva(r.id)} className="p-3 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={18}/></button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <div className="font-black text-lg text-slate-700">R$ {r.valor ? parseFloat(r.valor).toFixed(2) : '0.00'}</div>
-                  <select value={r.status} onChange={e => onUpdateStatus(r.id, e.target.value)} className={`text-[10px] font-black uppercase px-3 py-2 rounded-xl border outline-none ${RESERVA_STATUS_COLORS[r.status] || 'bg-slate-100 text-slate-600 border-slate-200'}`}>
-                    <option value="Pendente">Pendente</option>
-                    <option value="Confirmada">Confirmada</option>
-                    <option value="Cancelada">Cancelada</option>
-                  </select>
-                  {r.receiptName && <button onClick={() => onViewAttachment({ name: r.receiptName, userId: `reservas/${r.userId}` })} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Eye size={20}/></button>}
-                  <button onClick={() => onDeleteReserva(r.id)} className="p-3 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={18}/></button>
-                </div>
-              </div>
-            ))}
+              );
+
+              return (
+                <>
+                  {tripKeys.map(key => {
+                    const tripItems = tripGroups[key];
+                    const total = tripItems.reduce((acc, r) => acc + (r.valor ? parseFloat(r.valor) : 0), 0);
+                    const tipos = [...new Set(tripItems.map(r => r.tipo))];
+                    return (
+                      <div key={key} className="bg-amber-50/40">
+                        <div className="px-5 pt-4 pb-2 flex items-center justify-between flex-wrap gap-2">
+                          <div className="flex items-center gap-2">
+                            <div className="bg-amber-100 p-1.5 rounded-lg"><Briefcase size={14} className="text-amber-700"/></div>
+                            <span className="font-black text-amber-800 text-xs uppercase tracking-widest">{key}</span>
+                            <span className="text-[9px] font-bold text-amber-600 bg-amber-100 px-2 py-0.5 rounded-md uppercase tracking-widest">{tipos.join(' + ')}</span>
+                          </div>
+                          <span className="font-black text-amber-800 text-sm">Total: R$ {total.toFixed(2)}</span>
+                        </div>
+                        <div className="divide-y divide-amber-100/60 border-y border-amber-100">
+                          {tripItems.map(renderReserva)}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {solo.map(renderReserva)}
+                </>
+              );
+            })()}
           </div>
         </div>
       ))}
