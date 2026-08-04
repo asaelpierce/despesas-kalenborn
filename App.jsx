@@ -1121,6 +1121,7 @@ function ReservaForm({ vendedores = [], reservasExistentes = [], onExtract, onSu
   const [receiptName, setReceiptName] = useState(null);
   const [rawExtraction, setRawExtraction] = useState(null);
   const [extractedOnce, setExtractedOnce] = useState(false);
+  const [novaViagemMode, setNovaViagemMode] = useState(false);
 
   const gruposSugeridos = [...new Set(
     reservasExistentes.filter(r => !form.vendedorId || r.vendedor_id === form.vendedorId).map(r => r.viagem_grupo).filter(Boolean)
@@ -1151,7 +1152,7 @@ function ReservaForm({ vendedores = [], reservasExistentes = [], onExtract, onSu
     if (!receiptName) return alert("Toque em 'Extrair dados com IA' primeiro (isso também envia o anexo).");
     if (await onSubmit(form, receiptName, rawExtraction)) {
       setForm({ tipo: 'Hotel', fornecedor: '', valor: '', dataInicio: '', dataFim: '', local: '', cliente: '', observacoes: '', vendedorId: form.vendedorId, vendedorNome: form.vendedorNome, viagemGrupo: form.viagemGrupo });
-      setFile(null); setReceiptName(null); setRawExtraction(null); setExtractedOnce(false);
+      setFile(null); setReceiptName(null); setRawExtraction(null); setExtractedOnce(false); setNovaViagemMode(false);
     }
   };
 
@@ -1172,9 +1173,24 @@ function ReservaForm({ vendedores = [], reservasExistentes = [], onExtract, onSu
 
       <div className="bg-amber-50 p-6 rounded-3xl border border-amber-100 text-left">
         <label className="text-[10px] font-black text-amber-800 uppercase block mb-2 tracking-widest">Viagem / Grupo (opcional)</label>
-        <input type="text" list="viagens-grupo" className="w-full p-4 border border-amber-200 rounded-2xl bg-white font-bold outline-none" placeholder="Ex: Viagem Vitória - Jul/2026" value={form.viagemGrupo} onChange={e => setForm({...form, viagemGrupo: e.target.value})} />
-        <datalist id="viagens-grupo">{gruposSugeridos.map(g => <option key={g} value={g} />)}</datalist>
-        <p className="text-[10px] text-amber-700/70 italic mt-2">Use o mesmo nome em Hotel, Carro e Passagem da mesma viagem para elas aparecerem agrupadas.</p>
+        {!novaViagemMode ? (
+          <div className="flex gap-2">
+            <select className="flex-1 p-4 border border-amber-200 rounded-2xl bg-white font-bold outline-none" value={form.viagemGrupo} onChange={e => {
+              if (e.target.value === '__nova__') { setNovaViagemMode(true); setForm({...form, viagemGrupo: ''}); }
+              else setForm({...form, viagemGrupo: e.target.value});
+            }}>
+              <option value="">-- Sem viagem / avulso --</option>
+              {gruposSugeridos.map(g => <option key={g} value={g}>{g}</option>)}
+              <option value="__nova__">+ Criar nova viagem...</option>
+            </select>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <input type="text" autoFocus className="flex-1 p-4 border border-amber-200 rounded-2xl bg-white font-bold outline-none" placeholder="Ex: Viagem Vitória - Jul/2026" value={form.viagemGrupo} onChange={e => setForm({...form, viagemGrupo: e.target.value})} />
+            <button type="button" onClick={() => { setNovaViagemMode(false); setForm({...form, viagemGrupo: ''}); }} className="px-4 bg-slate-100 rounded-2xl text-slate-500 font-black text-xs uppercase hover:bg-slate-200 transition-all">Cancelar</button>
+          </div>
+        )}
+        <p className="text-[10px] text-amber-700/70 italic mt-2">Selecione uma viagem já criada para agrupar Hotel, Carro e Passagem juntos, ou crie uma nova.</p>
       </div>
 
       <div className="space-y-2 text-left">
