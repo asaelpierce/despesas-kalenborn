@@ -21,6 +21,7 @@ const ENDPOINT_USERS = `${SUPABASE_URL}/rest/v1/users`;
 const ENDPOINT_EXPENSES = `${SUPABASE_URL}/rest/v1/expenses`;
 const ENDPOINT_TRIPS = `${SUPABASE_URL}/rest/v1/trips`;
 const ENDPOINT_RESERVAS = `${SUPABASE_URL}/rest/v1/reservas`;
+const ENDPOINT_VISITS = `${SUPABASE_URL}/rest/v1/visits`;
 const EDGE_FUNCTION_EXTRACT = `${SUPABASE_URL}/functions/v1/extract-reserva`;
 const STORAGE_BUCKET = 'attachments';
 const RESERVA_TIPOS = ['Hotel', 'Carro', 'Passagem'];
@@ -67,6 +68,7 @@ export default function App() {
   const [expenses, setExpenses] = useState([]);
   const [trips, setTrips] = useState([]);
   const [reservas, setReservas] = useState([]);
+  const [visits, setVisits] = useState([]);
   const [isExtracting, setIsExtracting] = useState(false);
   
   const [activeTab, setActiveTab] = useState('minhas_despesas');
@@ -84,17 +86,19 @@ export default function App() {
 
   const fetchData = async () => {
     try {
-      const [resUsers, resExp, resTrips, resReservas] = await Promise.all([
+      const [resUsers, resExp, resTrips, resReservas, resVisits] = await Promise.all([
         fetch(`${ENDPOINT_USERS}?select=*`, { headers: HEADERS }),
         fetch(`${ENDPOINT_EXPENSES}?select=*&order=created_at.desc`, { headers: HEADERS }),
         fetch(`${ENDPOINT_TRIPS}?select=*&order=created_at.desc`, { headers: HEADERS }),
-        fetch(`${ENDPOINT_RESERVAS}?select=*&order=created_at.desc`, { headers: HEADERS })
+        fetch(`${ENDPOINT_RESERVAS}?select=*&order=created_at.desc`, { headers: HEADERS }),
+        fetch(`${ENDPOINT_VISITS}?select=*&order=date.desc`, { headers: HEADERS })
       ]);
       
       if (resUsers.ok) setUsers(await resUsers.json());
       if (resExp.ok) setExpenses(await resExp.json());
       if (resTrips.ok) setTrips(await resTrips.json());
       if (resReservas.ok) setReservas(await resReservas.json());
+      if (resVisits.ok) setVisits(await resVisits.json());
       
     } catch (error) {
       console.error("Erro ao carregar dados:", error);
@@ -303,6 +307,7 @@ export default function App() {
     }
     else if (itemToDelete.type === 'user') await fetch(`${ENDPOINT_USERS}?id=eq.${itemToDelete.id}`, { method: 'DELETE', headers: HEADERS });
     else if (itemToDelete.type === 'reserva') await fetch(`${ENDPOINT_RESERVAS}?id=eq.${itemToDelete.id}`, { method: 'DELETE', headers: HEADERS });
+    else if (itemToDelete.type === 'visit') await fetch(`${ENDPOINT_VISITS}?id=eq.${itemToDelete.id}`, { method: 'DELETE', headers: HEADERS });
     fetchData();
     setItemToDelete(null);
     setIsLoading(false);
@@ -319,6 +324,16 @@ export default function App() {
     setIsLoading(false);
     setMonthToClose(null);
     setSystemMessage({ title: 'Mês Fechado', text: `Suas despesas aprovadas de ${monthToClose} foram fechadas.` });
+  };
+
+  const handleAddVisit = async (visitData) => {
+    setIsLoading(true);
+    try {
+      const payload = { userId: currentUser.id, userName: currentUser.name, location: visitData.location, date: visitData.date, notes: visitData.notes || null };
+      const res = await fetch(ENDPOINT_VISITS, { method: 'POST', headers: { ...HEADERS, 'Prefer': 'return=minimal' }, body: JSON.stringify(payload) });
+      if (res.ok) { await fetchData(); setSystemMessage({ title: 'Visita Registrada', text: `Visita em ${visitData.location} registrada com sucesso!` }); return true; }
+      return false;
+    } finally { setIsLoading(false); }
   };
 
   const handleUpdateStatus = async (id, newStatus) => {
@@ -478,12 +493,14 @@ export default function App() {
               <NavBtn active={activeTab === 'viagens'} onClick={() => {setActiveTab('viagens'); setIsMobileMenuOpen(false);}} icon={<Plane size={18}/>} label="Minhas Viagens" />
               <NavBtn active={activeTab === 'minhas_despesas'} onClick={() => {setActiveTab('minhas_despesas'); setIsMobileMenuOpen(false);}} icon={<FileText size={18}/>} label="Minhas Despesas" />
               <NavBtn active={activeTab === 'meu_fechamento'} onClick={() => {setActiveTab('meu_fechamento'); setIsMobileMenuOpen(false);}} icon={<BarChart3 size={18}/>} label="Meu Fechamento" />
+              <NavBtn active={activeTab === 'registrar_visita'} onClick={() => {setActiveTab('registrar_visita'); setIsMobileMenuOpen(false);}} icon={<MapPin size={18}/>} label="Registrar Visita" />
             </>
           )}
           {currentUser.role === 'comercial' && (
             <>
               <NavBtn active={activeTab === 'nova_reserva'} onClick={() => {setActiveTab('nova_reserva'); setIsMobileMenuOpen(false);}} icon={<Briefcase size={18}/>} label="Nova Reserva" />
               <NavBtn active={activeTab === 'minhas_reservas'} onClick={() => {setActiveTab('minhas_reservas'); setIsMobileMenuOpen(false);}} icon={<FileText size={18}/>} label="Minhas Reservas" />
+              <NavBtn active={activeTab === 'visitas_dashboard'} onClick={() => {setActiveTab('visitas_dashboard'); setIsMobileMenuOpen(false);}} icon={<MapPin size={18}/>} label="Visitas" />
             </>
           )}
           {currentUser.role === 'gestor' && (
@@ -493,6 +510,7 @@ export default function App() {
                 <NavBtn active={activeTab === 'aprovacoes'} onClick={() => {setActiveTab('aprovacoes'); setIsMobileMenuOpen(false);}} icon={<CheckCircle size={18}/>} label="Aprovações" badge={expensesForManager.length} />
                 <NavBtn active={activeTab === 'historico_vendedores'} onClick={() => {setActiveTab('historico_vendedores'); setIsMobileMenuOpen(false);}} icon={<History size={18}/>} label="Vendedores" />
                 <NavBtn active={activeTab === 'fechamento'} onClick={() => {setActiveTab('fechamento'); setIsMobileMenuOpen(false);}} icon={<BarChart3 size={18}/>} label="Fechamento Mensal" />
+                <NavBtn active={activeTab === 'visitas_dashboard'} onClick={() => {setActiveTab('visitas_dashboard'); setIsMobileMenuOpen(false);}} icon={<MapPin size={18}/>} label="Visitas" />
                 <NavBtn active={activeTab === 'reservas_geral'} onClick={() => {setActiveTab('reservas_geral'); setIsMobileMenuOpen(false);}} icon={<Briefcase size={18}/>} label="Reservas (Priscila)" />
                 <NavBtn active={activeTab === 'equipa'} onClick={() => {setActiveTab('equipa'); setIsMobileMenuOpen(false);}} icon={<Users size={18}/>} label="Gerir Equipa" />
               </div>
@@ -505,6 +523,13 @@ export default function App() {
           {activeTab === 'nova' && <ExpenseForm onSubmit={handleAddExpense} trips={trips.filter(t => t.userId === currentUser.id && getComputedTripStatus(t) !== 'Enviada')} loading={isLoading} />}
           {activeTab === 'minhas_despesas' && <ExpenseList data={expenses.filter(e => e.userId === currentUser.id)} isGestor={false} trips={trips} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} title="Minhas Despesas" />}
           {activeTab === 'meu_fechamento' && <MyMonthlyClosing expenses={expenses.filter(e => e.userId === currentUser.id)} onDownloadExcel={handleDownloadMyExcel} onDownloadZip={handleDownloadMyZip} onCloseMonth={(month) => setMonthToClose(month)} zippingState={zippingState} />}
+          {activeTab === 'registrar_visita' && (
+            <div className="space-y-6">
+              <VisitForm onSubmit={handleAddVisit} myVisitsCount={visits.filter(v => v.userId === currentUser.id).length} loading={isLoading} />
+              <MyVisits visits={visits.filter(v => v.userId === currentUser.id)} onDelete={(id) => setItemToDelete({ type: 'visit', id })} />
+            </div>
+          )}
+          {activeTab === 'visitas_dashboard' && <VisitsDashboard visits={visits} sellers={users.filter(u => u.role === 'vendedor')} />}
           {activeTab === 'aprovacoes' && <ExpenseList data={expensesForManager} isGestor={true} trips={trips} onUpdateStatus={handleUpdateStatus} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} showAll title="Aguardando Aprovação" />}
           {activeTab === 'viagens' && <TripsList trips={trips.filter(t => t.userId === currentUser.id)} expenses={expenses} getComputedTripStatus={getComputedTripStatus} onViewTrip={(trip) => { setSelectedTrip(trip); setActiveTab('detalhes_viagem'); }} />}
           
@@ -697,6 +722,165 @@ function CloseMonthModal({ month, onConfirm, onClose, loading }) {
           <button onClick={onConfirm} disabled={loading} className="w-full bg-purple-600 text-white px-8 py-5 rounded-2xl font-black uppercase text-xs hover:bg-purple-700 shadow-xl tracking-widest transition-all active:scale-95">SIM, FECHAR</button>
           <button onClick={onClose} disabled={loading} className="w-full bg-slate-100 text-slate-600 px-8 py-5 rounded-2xl font-black uppercase text-xs tracking-widest hover:bg-slate-200 transition-all">CANCELAR</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function VisitForm({ onSubmit, myVisitsCount, loading }) {
+  const todayStr = new Date().toISOString().split('T')[0];
+  const [location, setLocation] = useState('');
+  const [date, setDate] = useState(todayStr);
+  const [notes, setNotes] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!location.trim() || !date) return;
+    const ok = await onSubmit({ location: location.trim(), date, notes: notes.trim() });
+    if (ok) { setLocation(''); setNotes(''); setDate(todayStr); }
+  };
+
+  return (
+    <div className="space-y-6 text-left animate-in fade-in duration-300">
+      <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-4">
+          <div className="bg-blue-100 p-3 rounded-2xl"><MapPin className="text-blue-600" size={28}/></div>
+          <h2 className="font-black text-xl text-slate-800 tracking-tight text-left">Registrar Visita</h2>
+        </div>
+        <div className="bg-blue-600 text-white px-5 py-3 rounded-2xl text-center">
+          <div className="text-2xl font-black tabular-nums leading-none">{myVisitsCount}</div>
+          <div className="text-[9px] font-black uppercase tracking-widest opacity-80">Visitas registradas</div>
+        </div>
+      </div>
+      <form onSubmit={handleSubmit} className="bg-white p-6 sm:p-10 rounded-3xl border border-slate-100 shadow-sm space-y-5 text-left">
+        <div>
+          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Local Visitado</label>
+          <input type="text" value={location} onChange={e => setLocation(e.target.value)} placeholder="Ex: Cliente XPTO - Belo Horizonte" required className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-sm" />
+        </div>
+        <div>
+          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Data da Visita</label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} required className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-sm" />
+        </div>
+        <div>
+          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Observações (opcional)</label>
+          <textarea value={notes} onChange={e => setNotes(e.target.value)} rows={3} placeholder="Detalhes da visita..." className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold text-sm resize-none" />
+        </div>
+        <button type="submit" disabled={loading} className="w-full bg-blue-600 text-white px-8 py-5 rounded-2xl font-black uppercase text-xs hover:bg-blue-700 shadow-xl tracking-widest transition-all active:scale-95 disabled:opacity-50 flex items-center justify-center gap-2"><Save size={16}/> Registrar Visita</button>
+      </form>
+    </div>
+  );
+}
+
+function MyVisits({ visits, onDelete }) {
+  const sorted = [...visits].sort((a, b) => b.date.localeCompare(a.date));
+  return (
+    <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 sm:p-8 text-left">
+      <h3 className="font-black text-slate-800 uppercase tracking-tight text-sm mb-4 flex items-center gap-2"><History size={18} className="text-blue-500"/> Minhas Visitas ({visits.length})</h3>
+      {sorted.length === 0 ? (
+        <div className="text-center text-slate-300 italic uppercase text-[10px] font-black tracking-widest py-8">Nenhuma visita registrada ainda</div>
+      ) : (
+        <div className="space-y-2">
+          {sorted.map(v => (
+            <div key={v.id} className="flex items-center justify-between gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="bg-white p-2 rounded-xl border border-slate-100 shrink-0"><MapPin size={16} className="text-blue-500"/></div>
+                <div className="min-w-0">
+                  <div className="font-black text-sm text-slate-800 truncate">{v.location}</div>
+                  <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{formatDateDisplay(v.date)}{v.notes ? ` · ${v.notes}` : ''}</div>
+                </div>
+              </div>
+              <button onClick={() => onDelete(v.id)} className="p-2 bg-red-50 rounded-xl text-red-500 hover:bg-red-600 hover:text-white transition-all shrink-0"><Trash2 size={16}/></button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VisitsDashboard({ visits, sellers }) {
+  const [search, setSearch] = useState('');
+  const bySeller = {};
+  sellers.forEach(s => { bySeller[s.name] = []; });
+  visits.forEach(v => { if (!bySeller[v.userName]) bySeller[v.userName] = []; bySeller[v.userName].push(v); });
+
+  const names = Object.keys(bySeller).filter(n => n.toLowerCase().includes(search.toLowerCase())).sort();
+  const sorted = [...visits].sort((a, b) => b.date.localeCompare(a.date) || b.created_at?.localeCompare(a.created_at));
+
+  const handleExportVisits = async () => {
+    const XLSX = await import('https://esm.sh/xlsx@0.18.5');
+    const rows = [...visits].sort((a, b) => a.userName.localeCompare(b.userName) || a.date.localeCompare(b.date)).map(v => ({
+      'Vendedor': v.userName,
+      'Data': formatDateDisplay(v.date),
+      'Local Visitado': v.location,
+      'Observações': v.notes || ''
+    }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    ws['!cols'] = [{ wch: 20 }, { wch: 14 }, { wch: 40 }, { wch: 40 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Visitas');
+
+    const summaryRows = names.map(name => ({ 'Vendedor': name, 'Nº de Visitas': bySeller[name].length }));
+    const ws2 = XLSX.utils.json_to_sheet(summaryRows);
+    ws2['!cols'] = [{ wch: 20 }, { wch: 16 }];
+    XLSX.utils.book_append_sheet(wb, ws2, 'Resumo por Vendedor');
+
+    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `Visitas_Vendedores_${new Date().toISOString().split('T')[0]}.xlsx`;
+    link.click();
+  };
+
+  return (
+    <div className="space-y-6 text-left animate-in fade-in duration-300">
+      <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm flex items-center gap-4 justify-between flex-wrap">
+        <div className="flex items-center gap-4">
+          <div className="bg-blue-100 p-3 rounded-2xl"><MapPin className="text-blue-600" size={28}/></div>
+          <div>
+            <h2 className="font-black text-xl text-slate-800 tracking-tight text-left">Visitas dos Vendedores</h2>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">Atualiza automaticamente</p>
+          </div>
+        </div>
+        <button onClick={handleExportVisits} className="bg-emerald-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg tracking-widest hover:bg-emerald-600 transition-all"><Download size={14}/> Exportar Excel</button>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+        {names.map(name => (
+          <div key={name} className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
+            <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 truncate">{name}</div>
+            <div className="font-black text-3xl text-blue-600 tabular-nums">{bySeller[name].length}</div>
+            <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">Visitas</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-6 sm:p-8">
+        <div className="flex items-center justify-between gap-4 mb-4 flex-wrap">
+          <h3 className="font-black text-slate-800 uppercase tracking-tight text-sm flex items-center gap-2"><History size={18} className="text-blue-500"/> Todas as Visitas ({visits.length})</h3>
+          <div className="relative">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300"/>
+            <input type="text" value={search} onChange={e => setSearch(e.target.value)} placeholder="Filtrar vendedor..." className="pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold w-48" />
+          </div>
+        </div>
+        {sorted.length === 0 ? (
+          <div className="text-center text-slate-300 italic uppercase text-[10px] font-black tracking-widest py-8">Nenhuma visita registrada ainda</div>
+        ) : (
+          <div className="space-y-2 max-h-[600px] overflow-y-auto">
+            {sorted.filter(v => v.userName.toLowerCase().includes(search.toLowerCase())).map(v => (
+              <div key={v.id} className="flex items-center justify-between gap-3 p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="bg-white p-2 rounded-xl border border-slate-100 shrink-0"><MapPin size={16} className="text-blue-500"/></div>
+                  <div className="min-w-0">
+                    <div className="font-black text-sm text-slate-800 truncate">{v.location}</div>
+                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{v.userName} · {formatDateDisplay(v.date)}{v.notes ? ` · ${v.notes}` : ''}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
