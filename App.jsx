@@ -503,7 +503,7 @@ export default function App() {
               <NavBtn active={activeTab === 'viagens'} onClick={() => {setActiveTab('viagens'); setIsMobileMenuOpen(false);}} icon={<Plane size={18}/>} label="Minhas Viagens" />
               <NavBtn active={activeTab === 'minhas_despesas'} onClick={() => {setActiveTab('minhas_despesas'); setIsMobileMenuOpen(false);}} icon={<FileText size={18}/>} label="Minhas Despesas" />
               <NavBtn active={activeTab === 'meu_fechamento'} onClick={() => {setActiveTab('meu_fechamento'); setIsMobileMenuOpen(false);}} icon={<BarChart3 size={18}/>} label="Meu Fechamento" />
-              {currentUser.name !== 'Givaldo' && <NavBtn active={activeTab === 'registrar_visita'} onClick={() => {setActiveTab('registrar_visita'); setIsMobileMenuOpen(false);}} icon={<MapPin size={18}/>} label="Registrar Visita" />}
+              {currentUser.name !== 'Givanildo' && <NavBtn active={activeTab === 'registrar_visita'} onClick={() => {setActiveTab('registrar_visita'); setIsMobileMenuOpen(false);}} icon={<MapPin size={18}/>} label="Registrar Visita" />}
             </>
           )}
           {currentUser.role === 'comercial' && (
@@ -539,7 +539,7 @@ export default function App() {
               <MyVisits visits={visits.filter(v => v.userId === currentUser.id)} onDelete={(id) => setItemToDelete({ type: 'visit', id })} />
             </div>
           )}
-          {activeTab === 'visitas_dashboard' && <VisitsDashboard visits={visits} sellers={users.filter(u => (u.role === 'vendedor' || u.role === 'gestor') && u.ativo !== false && u.name !== 'Givaldo')} />}
+          {activeTab === 'visitas_dashboard' && <VisitsDashboard visits={visits} sellers={users.filter(u => (u.role === 'vendedor' || u.role === 'gestor') && u.ativo !== false && u.name !== 'Givanildo')} />}
           {activeTab === 'aprovacoes' && <ExpenseList data={expensesForManager} isGestor={true} trips={trips} onUpdateStatus={handleUpdateStatus} onViewAttachment={setAttachmentToView} onEditExpense={setExpenseToEdit} onDeleteExpense={(id) => setItemToDelete({ type: 'expense', id })} showAll title="Aguardando Aprovação" />}
           {activeTab === 'viagens' && <TripsList trips={trips.filter(t => t.userId === currentUser.id)} expenses={expenses} getComputedTripStatus={getComputedTripStatus} onViewTrip={(trip) => { setSelectedTrip(trip); setActiveTab('detalhes_viagem'); }} />}
           
