@@ -199,13 +199,18 @@ export default function App() {
     try {
       let uniqueFileName = '';
       if (file) {
-        uniqueFileName = `${Date.now()}_${file.name.replace(/\s/g, '_')}`;
+        const safeName = file.name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+        uniqueFileName = `${Date.now()}_${safeName}`;
         const filePath = `${currentUser.id}/${uniqueFileName}`;
-        await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${filePath}`, {
+        const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${filePath}`, {
           method: 'POST',
           headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': file.type },
           body: file
         });
+        if (!uploadRes.ok) {
+          setSystemMessage({ title: 'Falha no envio', text: 'Não foi possível enviar o comprovativo. Tente renomear o arquivo (sem acentos/símbolos) e anexar novamente.' });
+          return false;
+        }
       }
 
       const payload = {
@@ -223,13 +228,17 @@ export default function App() {
 
   // Faz upload do comprovativo e devolve o caminho + URL pública, sem criar o registo ainda.
   const uploadReservaFile = async (file) => {
-    const uniqueFileName = `${Date.now()}_${file.name.replace(/\s/g, '_')}`;
+    const safeName = file.name.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const uniqueFileName = `${Date.now()}_${safeName}`;
     const filePath = `reservas/${currentUser.id}/${uniqueFileName}`;
-    await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${filePath}`, {
+    const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${filePath}`, {
       method: 'POST',
       headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': file.type },
       body: file
     });
+    if (!uploadRes.ok) {
+      throw new Error('Falha ao enviar o arquivo para o Storage. Tente renomear o arquivo (sem acentos/símbolos) e anexar novamente.');
+    }
     const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${filePath}`;
     return { uniqueFileName, filePath, publicUrl };
   };
@@ -251,7 +260,7 @@ export default function App() {
       }
       return { receiptName: uniqueFileName, extracted: result.data, rawExtraction: result };
     } catch (error) {
-      setSystemMessage({ title: 'Falha na extração', text: 'Erro ao contactar o serviço de extração. Preencha manualmente.' });
+      setSystemMessage({ title: 'Falha na extração', text: error.message || 'Erro ao contactar o serviço de extração. Preencha manualmente.' });
       return { receiptName: null, extracted: null };
     } finally {
       setIsExtracting(false);
