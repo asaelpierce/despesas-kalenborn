@@ -565,7 +565,7 @@ export default function App() {
 
           {activeTab === 'fechamento' && <MonthlyClosing expenses={expenses} trips={trips} onDownloadExcel={handleDownloadExcel} onDownloadZip={handleDownloadZip} zippingState={zippingState} />}
           {activeTab === 'equipa' && <TeamManagement users={users} onAddUser={handleAddUser} onDeleteUser={(id) => setItemToDelete({ type: 'user', id })} loading={isLoading} />}
-          {activeTab === 'nova_reserva' && <ReservaForm vendedores={users.filter(u => u.role === 'vendedor')} reservasExistentes={reservas} onExtract={handleExtractReserva} onSubmit={handleAddReserva} isExtracting={isExtracting} loading={isLoading} />}
+          {activeTab === 'nova_reserva' && <ReservaForm vendedores={users.filter(u => u.role === 'vendedor' || u.role === 'gestor')} reservasExistentes={reservas} onExtract={handleExtractReserva} onSubmit={handleAddReserva} isExtracting={isExtracting} loading={isLoading} />}
           {activeTab === 'minhas_reservas' && <ReservaList data={reservas.filter(r => r.userId === currentUser.id)} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Minhas Reservas" />}
           {activeTab === 'reservas_geral' && <ReservaList data={reservas} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Todas as Reservas" showOwner />}
         </div>
