@@ -23,6 +23,7 @@ const ENDPOINT_TRIPS = `${SUPABASE_URL}/rest/v1/trips`;
 const ENDPOINT_RESERVAS = `${SUPABASE_URL}/rest/v1/reservas`;
 const ENDPOINT_VISITS = `${SUPABASE_URL}/rest/v1/visits`;
 const EDGE_FUNCTION_EXTRACT = `${SUPABASE_URL}/functions/v1/extract-reserva`;
+const EDGE_FUNCTION_EMAIL_DRAFT = `${SUPABASE_URL}/functions/v1/gerar-rascunho-fechamento`;
 const STORAGE_BUCKET = 'attachments';
 const RESERVA_TIPOS = ['Hotel', 'Carro', 'Passagem'];
 
@@ -83,6 +84,7 @@ export default function App() {
   const [tripToEdit, setTripToEdit] = useState(null);
   const [itemToDelete, setItemToDelete] = useState(null); 
   const [monthToClose, setMonthToClose] = useState(null);
+  const [emailDraftState, setEmailDraftState] = useState({ active: false });
 
   const fetchData = async () => {
     try {
@@ -352,56 +354,146 @@ export default function App() {
   };
 
   // Gera um arquivo XLSX real (SheetJS) a partir da lista de despesas
-  const generateExcelBlob = async (list) => {
-    const XLSX = await import('https://esm.sh/xlsx@0.18.5');
-    const rows = list.map(exp => {
+  const generateExcelBlob = async (list, opts = {}) => {
+    const ExcelJS = (await import('https://esm.sh/exceljs@4.4.0')).default;
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Kalenborn - Despesas de Viagem';
+    wb.created = new Date();
+    const ws = wb.addWorksheet('Relatório', { views: [{ state: 'frozen', ySplit: 1 }] });
+
+    ws.columns = [
+      { header: 'Vendedor', key: 'vendedor', width: 22 },
+      { header: 'Data do Gasto', key: 'data', width: 14 },
+      { header: 'Viagem / Cliente', key: 'viagem', width: 30 },
+      { header: 'Data Início Viagem', key: 'inicio', width: 16 },
+      { header: 'Data Fim Viagem', key: 'fim', width: 16 },
+      { header: 'Categoria', key: 'categoria', width: 16 },
+      { header: 'Valor (R$)', key: 'valor', width: 14 },
+      { header: 'Reembolsável?', key: 'reembolsavel', width: 14 },
+      { header: 'Descrição', key: 'descricao', width: 34 },
+      { header: 'Status', key: 'status', width: 14 },
+      { header: 'Link Comprovante', key: 'link', width: 55 },
+    ];
+
+    list.forEach(exp => {
       const trip = trips.find(t => t.id === exp.tripId);
       const tripInfo = trip ? `${trip.client} (${trip.destination})` : 'Lançamento Avulso';
-      const tripStartDate = trip ? formatDateDisplay(trip.start_date) : '-';
-      const tripEndDate = trip ? formatDateDisplay(trip.end_date) : '-';
-      const url = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${exp.userId}/${exp.receiptName}`;
-      return {
-        'Vendedor': exp.userName,
-        'Data do Gasto': formatDateDisplay(exp.date),
-        'Viagem / Cliente': tripInfo,
-        'Data Início Viagem': tripStartDate,
-        'Data Fim Viagem': tripEndDate,
-        'Categoria': exp.category,
-        'Valor (R$)': parseFloat(exp.amount) || 0,
-        'Reembolsável?': exp.isRefundable ? 'SIM' : 'NÃO',
-        'Descrição': exp.description || '',
-        'Status': exp.status,
-        'Link Comprovante': url
-      };
+      ws.addRow({
+        vendedor: exp.userName,
+        data: formatDateDisplay(exp.date),
+        viagem: tripInfo,
+        inicio: trip ? formatDateDisplay(trip.start_date) : '-',
+        fim: trip ? formatDateDisplay(trip.end_date) : '-',
+        categoria: exp.category,
+        valor: parseFloat(exp.amount) || 0,
+        reembolsavel: exp.isRefundable ? 'SIM' : 'NÃO',
+        descricao: exp.description || '',
+        status: exp.status,
+        link: `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${exp.userId}/${exp.receiptName}`
+      });
     });
-    const ws = XLSX.utils.json_to_sheet(rows);
-    ws['!cols'] = [{ wch: 22 }, { wch: 14 }, { wch: 28 }, { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 12 }, { wch: 14 }, { wch: 32 }, { wch: 14 }, { wch: 55 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Relatório');
-    const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-    return new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
+    // Cabeçalho estilizado
+    const headerRow = ws.getRow(1);
+    headerRow.eachCell(cell => {
+      cell.font = { name: 'Calibri', bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A8A' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      cell.border = { top: { style: 'thin', color: { argb: 'FFD1D5DB' } }, bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } }, left: { style: 'thin', color: { argb: 'FFD1D5DB' } }, right: { style: 'thin', color: { argb: 'FFD1D5DB' } } };
+    });
+    headerRow.height = 22;
+
+    // Linhas de dados: bordas, zebra e formato de moeda
+    ws.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      row.eachCell({ includeEmpty: true }, cell => {
+        cell.border = { top: { style: 'thin', color: { argb: 'FFE5E7EB' } }, bottom: { style: 'thin', color: { argb: 'FFE5E7EB' } }, left: { style: 'thin', color: { argb: 'FFE5E7EB' } }, right: { style: 'thin', color: { argb: 'FFE5E7EB' } } };
+        cell.font = { name: 'Calibri', size: 10 };
+      });
+      if (rowNumber % 2 === 0) {
+        row.eachCell({ includeEmpty: true }, cell => { cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } }; });
+      }
+      row.getCell('valor').numFmt = '#,##0.00';
+      row.getCell('valor').alignment = { horizontal: 'right' };
+      row.getCell('data').alignment = { horizontal: 'center' };
+      row.getCell('inicio').alignment = { horizontal: 'center' };
+      row.getCell('fim').alignment = { horizontal: 'center' };
+      row.getCell('reembolsavel').alignment = { horizontal: 'center' };
+      row.getCell('status').alignment = { horizontal: 'center' };
+    });
+
+    // Linha de total
+    const totalRow = ws.addRow({ vendedor: 'TOTAL GERAL', valor: list.reduce((acc, e) => acc + (parseFloat(e.amount) || 0), 0) });
+    totalRow.eachCell({ includeEmpty: true }, cell => {
+      cell.font = { name: 'Calibri', bold: true, size: 10 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDBEAFE' } };
+      cell.border = { top: { style: 'thin', color: { argb: 'FF93C5FD' } }, bottom: { style: 'thin', color: { argb: 'FF93C5FD' } }, left: { style: 'thin', color: { argb: 'FF93C5FD' } }, right: { style: 'thin', color: { argb: 'FF93C5FD' } } };
+    });
+    totalRow.getCell('valor').numFmt = '#,##0.00';
+    totalRow.getCell('valor').alignment = { horizontal: 'right' };
+
+    ws.autoFilter = { from: 'A1', to: `K${list.length + 1}` };
+
+    // Aba de resumo por vendedor
+    const ws2 = wb.addWorksheet('Resumo por Vendedor', { views: [{ state: 'frozen', ySplit: 1 }] });
+    ws2.columns = [
+      { header: 'Vendedor', key: 'vendedor', width: 22 },
+      { header: 'Nº Lançamentos', key: 'n', width: 16 },
+      { header: 'Total (R$)', key: 'total', width: 16 },
+    ];
+    ws2.getRow(1).eachCell(cell => {
+      cell.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1E3A8A' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+    const bySeller = {};
+    list.forEach(e => {
+      if (!bySeller[e.userName]) bySeller[e.userName] = { n: 0, total: 0 };
+      bySeller[e.userName].n++;
+      bySeller[e.userName].total += parseFloat(e.amount) || 0;
+    });
+    Object.entries(bySeller).sort((a, b) => a[0].localeCompare(b[0])).forEach(([vendedor, d]) => {
+      const row = ws2.addRow({ vendedor, n: d.n, total: d.total });
+      row.getCell('total').numFmt = '#,##0.00';
+      row.getCell('total').alignment = { horizontal: 'right' };
+      row.getCell('n').alignment = { horizontal: 'center' };
+      row.eachCell({ includeEmpty: true }, cell => { cell.border = { top: { style: 'thin', color: { argb: 'FFE5E7EB' } }, bottom: { style: 'thin', color: { argb: 'FFE5E7EB' } }, left: { style: 'thin', color: { argb: 'FFE5E7EB' } }, right: { style: 'thin', color: { argb: 'FFE5E7EB' } } }; });
+    });
+
+    const buffer = await wb.xlsx.writeBuffer();
+    return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   };
 
-  const handleDownloadExcel = async (month) => {
-    const approved = expenses.filter(e => e.month === month && (e.status === 'Aprovado' || e.status === 'Fechado'));
-    if (approved.length === 0) return alert("Não existem despesas aprovadas neste mês.");
+  const filterByWeek = (list, week) => {
+    if (!week) return list;
+    return list.filter(e => {
+      const day = parseInt(e.date.split('-')[2], 10);
+      return day >= week.start && day <= week.end;
+    });
+  };
+
+  const handleDownloadExcel = async (month, week = null) => {
+    let approved = expenses.filter(e => e.month === month && (e.status === 'Aprovado' || e.status === 'Fechado'));
+    approved = filterByWeek(approved, week);
+    if (approved.length === 0) return alert("Não existem despesas aprovadas neste período.");
     const blob = await generateExcelBlob(approved);
     const link = document.createElement("a");
     link.href = URL.createObjectURL(blob);
-    link.download = `Relatorio_Kalenborn_${month}.xlsx`;
+    link.download = `Relatorio_Kalenborn_${month}${week ? `_Semana${week.n}` : ''}.xlsx`;
     link.click();
   };
 
-  const handleDownloadZip = async (month, sellerName = null) => {
+  const handleDownloadZip = async (month, sellerName = null, week = null) => {
     let approved = expenses.filter(e => e.month === month && (e.status === 'Aprovado' || e.status === 'Fechado'));
     if (sellerName) approved = approved.filter(e => e.userName === sellerName);
-    if (approved.length === 0) return alert("Sem anexos aprovados.");
+    approved = filterByWeek(approved, week);
+    if (approved.length === 0) return alert("Sem anexos aprovados neste período.");
     setZippingState({ active: true, label: sellerName || 'GERAL' });
     try {
       const JSZip = (await import('https://esm.sh/jszip@3.10.1')).default;
       const zip = new JSZip();
       const excelBlob = await generateExcelBlob(approved);
-      zip.file(`Relatorio_${sellerName || 'Geral'}_${month}.xlsx`, excelBlob);
+      zip.file(`Relatorio_${sellerName || 'Geral'}_${month}${week ? `_Semana${week.n}` : ''}.xlsx`, excelBlob);
       let fileCount = 0;
       for (const exp of approved) {
         if (!exp.receiptName) continue;
@@ -421,10 +513,47 @@ export default function App() {
         const zipBlob = await zip.generateAsync({ type: "blob" });
         const link = document.createElement("a");
         link.href = URL.createObjectURL(zipBlob);
-        link.download = `Anexos_Kalenborn_${sellerName || 'GERAL'}_${month}.zip`;
+        link.download = `Anexos_Kalenborn_${sellerName || 'GERAL'}_${month}${week ? `_Semana${week.n}` : ''}.zip`;
         link.click();
       }
     } finally { setZippingState({ active: false, label: '' }); }
+  };
+
+  const MESES_PT = { '01':'Janeiro','02':'Fevereiro','03':'Março','04':'Abril','05':'Maio','06':'Junho','07':'Julho','08':'Agosto','09':'Setembro','10':'Outubro','11':'Novembro','12':'Dezembro' };
+
+  const handleGenerateEmailDraft = async (month, week = null) => {
+    let approved = expenses.filter(e => e.month === month && (e.status === 'Aprovado' || e.status === 'Fechado'));
+    approved = filterByWeek(approved, week);
+    if (approved.length === 0) return setSystemMessage({ title: 'Sem dados', text: 'Não existem despesas aprovadas neste período para gerar o rascunho.' });
+
+    setEmailDraftState({ active: true });
+    try {
+      const excelBlob = await generateExcelBlob(approved);
+      const arrayBuffer = await excelBlob.arrayBuffer();
+      const base64File = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
+
+      const [yearStr, monthStr] = month.split('-');
+      const mesLabel = `${MESES_PT[monthStr]} ${yearStr}`;
+      const fileName = `Fechamento_Kalenborn_${month}${week ? `_Semana${week.n}` : ''}.xlsx`;
+      const subject = `Fechamento mensal ${mesLabel}${week ? ` - Semana ${week.n}` : ''} - Despesas vendedores`;
+      const body = `Prezado,\n\nSegue em anexo o arquivo.\n\nAtt,\n${currentUser.name}`;
+
+      const res = await fetch(EDGE_FUNCTION_EMAIL_DRAFT, {
+        method: 'POST',
+        headers: { ...HEADERS },
+        body: JSON.stringify({ subject, body, fileName, fileBase64: base64File })
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok || result.error) {
+        setSystemMessage({ title: 'Falha ao gerar rascunho', text: result.error || 'Não foi possível criar o rascunho no e-mail. Verifique se a automação está configurada.' });
+        return;
+      }
+      setSystemMessage({ title: 'Rascunho Criado', text: 'O rascunho do e-mail foi gerado com o arquivo em anexo. Confira na caixa de rascunhos.' });
+    } catch (error) {
+      setSystemMessage({ title: 'Falha ao gerar rascunho', text: error.message || 'Erro ao gerar o rascunho.' });
+    } finally {
+      setEmailDraftState({ active: false });
+    }
   };
 
   // --- Relatório individual (para o próprio vendedor tirar seu relatório) ---
@@ -572,7 +701,7 @@ export default function App() {
             />
           )}
 
-          {activeTab === 'fechamento' && <MonthlyClosing expenses={expenses} trips={trips} onDownloadExcel={handleDownloadExcel} onDownloadZip={handleDownloadZip} zippingState={zippingState} />}
+          {activeTab === 'fechamento' && <MonthlyClosing expenses={expenses} trips={trips} onDownloadExcel={handleDownloadExcel} onDownloadZip={handleDownloadZip} onGenerateEmailDraft={handleGenerateEmailDraft} zippingState={zippingState} emailDraftState={emailDraftState} />}
           {activeTab === 'equipa' && <TeamManagement users={users} onAddUser={handleAddUser} onDeleteUser={(id) => setItemToDelete({ type: 'user', id })} loading={isLoading} />}
           {activeTab === 'nova_reserva' && <ReservaForm vendedores={users.filter(u => (u.role === 'vendedor' || u.role === 'gestor') && u.ativo !== false)} reservasExistentes={reservas} onExtract={handleExtractReserva} onSubmit={handleAddReserva} isExtracting={isExtracting} loading={isLoading} />}
           {activeTab === 'minhas_reservas' && <ReservaList data={reservas.filter(r => r.userId === currentUser.id)} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Minhas Reservas" />}
@@ -1055,7 +1184,7 @@ function TripsList({ trips, expenses, getComputedTripStatus, onViewTrip }) {
   );
 }
 
-function MonthlyClosing({ expenses, onDownloadExcel, onDownloadZip, zippingState }) {
+function MonthlyClosing({ expenses, onDownloadExcel, onDownloadZip, onGenerateEmailDraft, zippingState, emailDraftState }) {
   const [selectedMonth, setSelectedMonth] = useState(null);
   const months = [...new Set(expenses.map(e => e.month))].sort().reverse();
   return (
@@ -1063,14 +1192,31 @@ function MonthlyClosing({ expenses, onDownloadExcel, onDownloadZip, zippingState
       <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm flex items-center gap-4"><div className="bg-blue-100 p-3 rounded-2xl"><BarChart3 className="text-blue-600" size={28}/></div><h2 className="font-black text-xl text-slate-800 tracking-tight text-left">Fechamento Mensal</h2></div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 text-left">
         <div className="lg:col-span-1 space-y-3">{months.map(m => <button key={m} onClick={() => setSelectedMonth(m)} className={`w-full p-6 rounded-3xl border transition-all text-left flex justify-between items-center ${selectedMonth === m ? 'bg-blue-600 text-white border-blue-600 shadow-xl' : 'bg-white border-slate-100 text-slate-800'}`}>{m}<Calendar size={20}/></button>)}</div>
-        <div className="lg:col-span-2 text-left">{selectedMonth ? <ClosingDetails month={selectedMonth} expenses={expenses} onExcel={() => onDownloadExcel(selectedMonth)} onZip={(seller) => onDownloadZip(selectedMonth, seller)} zippingState={zippingState} /> : <div className="bg-white h-64 rounded-3xl border border-slate-100 flex items-center justify-center text-slate-400 font-black uppercase tracking-widest text-xs italic">Selecione um mês à esquerda</div>}</div>
+        <div className="lg:col-span-2 text-left">{selectedMonth ? <ClosingDetails month={selectedMonth} expenses={expenses} onExcel={(week) => onDownloadExcel(selectedMonth, week)} onZip={(seller, week) => onDownloadZip(selectedMonth, seller, week)} onGenerateEmailDraft={onGenerateEmailDraft} zippingState={zippingState} emailDraftState={emailDraftState} /> : <div className="bg-white h-64 rounded-3xl border border-slate-100 flex items-center justify-center text-slate-400 font-black uppercase tracking-widest text-xs italic">Selecione um mês à esquerda</div>}</div>
       </div>
     </div>
   );
 }
 
-function ClosingDetails({ month, expenses, onExcel, onZip, zippingState }) {
-  const approved = expenses.filter(e => e.month === month && (e.status === 'Aprovado' || e.status === 'Fechado'));
+function ClosingDetails({ month, expenses, onExcel, onZip, onGenerateEmailDraft, zippingState, emailDraftState }) {
+  const [weekFilter, setWeekFilter] = useState('all');
+
+  const approvedAll = expenses.filter(e => e.month === month && (e.status === 'Aprovado' || e.status === 'Fechado'));
+  const [yearStr, monthStr] = month.split('-');
+  const daysInMonth = new Date(parseInt(yearStr), parseInt(monthStr), 0).getDate();
+  const weekOf = (dateStr) => {
+    const day = parseInt(dateStr.split('-')[2], 10);
+    return Math.min(Math.ceil(day / 7), 5);
+  };
+  const numWeeks = Math.ceil(daysInMonth / 7);
+  const weekRanges = Array.from({ length: numWeeks }, (_, i) => {
+    const start = i * 7 + 1;
+    const end = Math.min(start + 6, daysInMonth);
+    return { n: i + 1, start, end };
+  });
+
+  const approved = weekFilter === 'all' ? approvedAll : approvedAll.filter(e => weekOf(e.date) === weekFilter);
+
   const byUser = approved.reduce((acc, exp) => {
     if(!acc[exp.userName]) acc[exp.userName] = { refund: 0, corp: 0, count: 0 };
     if(exp.isRefundable) acc[exp.userName].refund += parseFloat(exp.amount);
@@ -1079,27 +1225,43 @@ function ClosingDetails({ month, expenses, onExcel, onZip, zippingState }) {
     return acc;
   }, {});
   const totalGeral = Object.values(byUser).reduce((acc, u) => acc + u.refund, 0);
+  const weekLabel = weekFilter === 'all' ? null : weekRanges.find(w => w.n === weekFilter);
+  const isDrafting = emailDraftState && emailDraftState.active;
   return (
     <div className="bg-white p-6 sm:p-10 rounded-3xl border border-slate-100 shadow-sm text-left animate-in fade-in duration-300">
-      <div className="flex flex-col sm:flex-row justify-between items-start mb-8 border-b pb-6 gap-4 text-left">
+      <div className="flex flex-col sm:flex-row justify-between items-start mb-6 border-b pb-6 gap-4 text-left">
         <div className="text-left"><p className="text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Mês Referência</p><h3 className="font-black text-3xl text-slate-800">{month}</h3></div>
-        <div className="flex gap-3 w-full sm:w-auto">
-          <button onClick={onExcel} className="flex-1 sm:flex-none bg-emerald-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg tracking-widest hover:bg-emerald-600 transition-all"><Download size={14}/> Excel GERAL</button>
-          <button onClick={() => onZip(null)} disabled={zippingState.active && zippingState.label === 'GERAL'} className="flex-1 sm:flex-none bg-indigo-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-indigo-600 transition-all">
+        <div className="flex flex-wrap gap-3 w-full sm:w-auto">
+          <button onClick={() => onExcel(weekFilter === 'all' ? null : weekLabel)} className="flex-1 sm:flex-none bg-emerald-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg tracking-widest hover:bg-emerald-600 transition-all"><Download size={14}/> Excel {weekFilter === 'all' ? 'GERAL' : `SEMANA ${weekFilter}`}</button>
+          <button onClick={() => onZip(null, weekFilter === 'all' ? null : weekLabel)} disabled={zippingState.active && zippingState.label === 'GERAL'} className="flex-1 sm:flex-none bg-indigo-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-indigo-600 transition-all">
             {zippingState.active && zippingState.label === 'GERAL' ? <Clock size={14} className="animate-spin"/> : <Archive size={14}/>} ZIP GERAL
           </button>
+          {onGenerateEmailDraft && (
+            <button onClick={() => onGenerateEmailDraft(month, weekFilter === 'all' ? null : weekLabel)} disabled={isDrafting} className="flex-1 sm:flex-none bg-slate-800 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-slate-900 transition-all">
+              {isDrafting ? <Clock size={14} className="animate-spin"/> : <Send size={14}/>} Gerar Rascunho E-mail
+            </button>
+          )}
         </div>
       </div>
-      <div className="bg-green-50 rounded-3xl p-6 mb-8 border border-green-100 flex items-center justify-between"><div><p className="text-[10px] font-black text-green-600/70 uppercase tracking-widest mb-1">Total a Reembolsar Equipa</p><div className="font-black text-4xl text-green-600 tabular-nums">R$ {totalGeral.toFixed(2)}</div></div><Wallet size={48} className="text-green-200"/></div>
-      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Fecho Individual por Vendedor</p>
+
+      <div className="flex flex-wrap gap-2 mb-6">
+        <button onClick={() => setWeekFilter('all')} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${weekFilter === 'all' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300'}`}>Mês Inteiro</button>
+        {weekRanges.map(w => (
+          <button key={w.n} onClick={() => setWeekFilter(w.n)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${weekFilter === w.n ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300'}`}>Semana {w.n} <span className="opacity-60 normal-case font-bold">({w.start}-{w.end})</span></button>
+        ))}
+      </div>
+
+      <div className="bg-green-50 rounded-3xl p-6 mb-8 border border-green-100 flex items-center justify-between"><div><p className="text-[10px] font-black text-green-600/70 uppercase tracking-widest mb-1">Total a Reembolsar {weekFilter === 'all' ? 'Equipa' : `· Semana ${weekFilter}`}</p><div className="font-black text-4xl text-green-600 tabular-nums">R$ {totalGeral.toFixed(2)}</div></div><Wallet size={48} className="text-green-200"/></div>
+      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Fecho Individual por Vendedor {weekFilter !== 'all' ? `· Semana ${weekFilter}` : ''}</p>
       <div className="space-y-4 text-left">
+        {Object.keys(byUser).length === 0 && <div className="text-center text-slate-300 italic uppercase text-[10px] font-black tracking-widest py-8">Sem lançamentos aprovados neste período</div>}
         {Object.entries(byUser).map(([name, data]) => (
           <div key={name} className="p-5 rounded-2xl bg-slate-50 border border-slate-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 hover:border-blue-200 transition-colors">
             <div className="text-left"><div className="font-black text-lg text-slate-800">{name}</div><div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{data.count} Lançamentos Aprovados</div></div>
             <div className="flex gap-6 items-center text-right w-full sm:w-auto border-t sm:border-0 pt-3 sm:pt-0">
               <div className="hidden xs:block"><p className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Cartão Corp</p><p className="font-black text-sm text-slate-500">R$ {data.corp.toFixed(2)}</p></div>
               <div><p className="text-[9px] font-black text-green-600 uppercase">A Reembolsar</p><p className="font-black text-xl text-green-600">R$ {data.refund.toFixed(2)}</p></div>
-              <button onClick={() => onZip(name)} disabled={zippingState.active && zippingState.label === name} className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl hover:bg-indigo-600 hover:text-white transition-all disabled:opacity-50 shadow-sm">{zippingState.active && zippingState.label === name ? <Clock size={20} className="animate-spin" /> : <Archive size={20}/>}</button>
+              <button onClick={() => onZip(name, weekFilter === 'all' ? null : weekLabel)} disabled={zippingState.active && zippingState.label === name} className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl hover:bg-indigo-600 hover:text-white transition-all disabled:opacity-50 shadow-sm">{zippingState.active && zippingState.label === name ? <Clock size={20} className="animate-spin" /> : <Archive size={20}/>}</button>
             </div>
           </div>
         ))}
