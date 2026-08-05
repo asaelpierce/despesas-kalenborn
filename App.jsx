@@ -529,19 +529,46 @@ export default function App() {
     setEmailDraftState({ active: true });
     try {
       const excelBlob = await generateExcelBlob(approved);
-      const arrayBuffer = await excelBlob.arrayBuffer();
-      const base64File = btoa(new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), ''));
 
       const [yearStr, monthStr] = month.split('-');
       const mesLabel = `${MESES_PT[monthStr]} ${yearStr}`;
+      const periodoLabel = week ? `${mesLabel} · Semana ${week.n} (dias ${week.start} a ${week.end})` : mesLabel;
       const fileName = `Fechamento_Kalenborn_${month}${week ? `_Semana${week.n}` : ''}.xlsx`;
       const subject = `Fechamento mensal ${mesLabel}${week ? ` - Semana ${week.n}` : ''} - Despesas vendedores`;
-      const body = `Prezado,\n\nSegue em anexo o arquivo.\n\nAtt,\n${currentUser.name}`;
+
+      // Sobe o Excel para o Storage (bucket público) para que o Power Automate baixe o arquivo binário direto,
+      // em vez de transportar base64 dentro do JSON (mais frágil e sujeito a corrupção no meio do caminho).
+      const storagePath = `fechamentos/${fileName}_${Date.now()}.xlsx`;
+      const uploadRes = await fetch(`${SUPABASE_URL}/storage/v1/object/${STORAGE_BUCKET}/${storagePath}`, {
+        method: 'POST',
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+        body: excelBlob
+      });
+      if (!uploadRes.ok) throw new Error('Falha ao enviar o Excel para o Storage antes de gerar o rascunho.');
+      const fileUrl = `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/${storagePath}`;
+
+      const totalGeral = approved.reduce((acc, e) => acc + (parseFloat(e.amount) || 0), 0);
+      const totalReembolsavel = approved.filter(e => e.isRefundable).reduce((acc, e) => acc + (parseFloat(e.amount) || 0), 0);
+      const vendedoresUnicos = [...new Set(approved.map(e => e.userName))].length;
+
+      const body =
+`<p>Olá,</p>
+<p>Segue em anexo o fechamento de despesas de viagem referente a <b>${periodoLabel}</b>.</p>
+<p><b>Resumo do período:</b></p>
+<ul>
+  <li>Total de lançamentos aprovados: <b>${approved.length}</b></li>
+  <li>Vendedores envolvidos: <b>${vendedoresUnicos}</b></li>
+  <li>Valor total do período: <b>R$ ${totalGeral.toFixed(2)}</b></li>
+  <li>Valor total a reembolsar: <b>R$ ${totalReembolsavel.toFixed(2)}</b></li>
+</ul>
+<p>O arquivo em anexo traz o detalhamento completo, com abas de resumo por vendedor.</p>
+<p>Qualquer dúvida, estou à disposição.</p>
+<p>Atenciosamente,<br>${currentUser.name}</p>`;
 
       const res = await fetch(EDGE_FUNCTION_EMAIL_DRAFT, {
         method: 'POST',
         headers: { ...HEADERS },
-        body: JSON.stringify({ subject, body, fileName, fileBase64: base64File })
+        body: JSON.stringify({ subject, body, isHtml: true, fileName, fileUrl })
       });
       const result = await res.json().catch(() => ({}));
       if (!res.ok || result.error) {
@@ -1186,36 +1213,72 @@ function TripsList({ trips, expenses, getComputedTripStatus, onViewTrip }) {
 
 function MonthlyClosing({ expenses, onDownloadExcel, onDownloadZip, onGenerateEmailDraft, zippingState, emailDraftState }) {
   const [selectedMonth, setSelectedMonth] = useState(null);
+  const [selectedWeek, setSelectedWeek] = useState('all');
   const months = [...new Set(expenses.map(e => e.month))].sort().reverse();
+
+  const weekRangesFor = (month) => {
+    const [yearStr, monthStr] = month.split('-');
+    const daysInMonth = new Date(parseInt(yearStr), parseInt(monthStr), 0).getDate();
+    const numWeeks = Math.ceil(daysInMonth / 7);
+    return Array.from({ length: numWeeks }, (_, i) => {
+      const start = i * 7 + 1;
+      const end = Math.min(start + 6, daysInMonth);
+      return { n: i + 1, start, end };
+    });
+  };
+
+  const weekLabel = selectedMonth && selectedWeek !== 'all' ? weekRangesFor(selectedMonth).find(w => w.n === selectedWeek) : null;
+
   return (
     <div className="space-y-6 text-left animate-in fade-in duration-300">
       <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-100 shadow-sm flex items-center gap-4"><div className="bg-blue-100 p-3 rounded-2xl"><BarChart3 className="text-blue-600" size={28}/></div><h2 className="font-black text-xl text-slate-800 tracking-tight text-left">Fechamento Mensal</h2></div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 text-left">
-        <div className="lg:col-span-1 space-y-3">{months.map(m => <button key={m} onClick={() => setSelectedMonth(m)} className={`w-full p-6 rounded-3xl border transition-all text-left flex justify-between items-center ${selectedMonth === m ? 'bg-blue-600 text-white border-blue-600 shadow-xl' : 'bg-white border-slate-100 text-slate-800'}`}>{m}<Calendar size={20}/></button>)}</div>
-        <div className="lg:col-span-2 text-left">{selectedMonth ? <ClosingDetails month={selectedMonth} expenses={expenses} onExcel={(week) => onDownloadExcel(selectedMonth, week)} onZip={(seller, week) => onDownloadZip(selectedMonth, seller, week)} onGenerateEmailDraft={onGenerateEmailDraft} zippingState={zippingState} emailDraftState={emailDraftState} /> : <div className="bg-white h-64 rounded-3xl border border-slate-100 flex items-center justify-center text-slate-400 font-black uppercase tracking-widest text-xs italic">Selecione um mês à esquerda</div>}</div>
+        <div className="lg:col-span-1 space-y-3">
+          {months.map(m => (
+            <div key={m}>
+              <button onClick={() => { setSelectedMonth(m); setSelectedWeek('all'); }} className={`w-full p-6 rounded-3xl border transition-all text-left flex justify-between items-center ${selectedMonth === m ? 'bg-blue-600 text-white border-blue-600 shadow-xl' : 'bg-white border-slate-100 text-slate-800'}`}>{m}<Calendar size={20}/></button>
+              {selectedMonth === m && (
+                <div className="mt-2 ml-3 flex flex-wrap gap-2 animate-in fade-in duration-200">
+                  <button onClick={() => setSelectedWeek('all')} className={`px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest border transition-all ${selectedWeek === 'all' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300'}`}>Mês Inteiro</button>
+                  {weekRangesFor(m).map(w => (
+                    <button key={w.n} onClick={() => setSelectedWeek(w.n)} className={`px-3 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest border transition-all ${selectedWeek === w.n ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300'}`}>Semana {w.n} <span className="opacity-60 normal-case font-bold">({w.start}-{w.end})</span></button>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+        <div className="lg:col-span-2 text-left">
+          {selectedMonth ? (
+            <ClosingDetails
+              month={selectedMonth}
+              week={weekLabel}
+              expenses={expenses}
+              onExcel={() => onDownloadExcel(selectedMonth, weekLabel)}
+              onZip={(seller) => onDownloadZip(selectedMonth, seller, weekLabel)}
+              onGenerateEmailDraft={() => onGenerateEmailDraft(selectedMonth, weekLabel)}
+              zippingState={zippingState}
+              emailDraftState={emailDraftState}
+            />
+          ) : <div className="bg-white h-64 rounded-3xl border border-slate-100 flex items-center justify-center text-slate-400 font-black uppercase tracking-widest text-xs italic">Selecione um mês à esquerda</div>}
+        </div>
       </div>
     </div>
   );
 }
 
-function ClosingDetails({ month, expenses, onExcel, onZip, onGenerateEmailDraft, zippingState, emailDraftState }) {
-  const [weekFilter, setWeekFilter] = useState('all');
-
+function ClosingDetails({ month, week, expenses, onExcel, onZip, onGenerateEmailDraft, zippingState, emailDraftState }) {
   const approvedAll = expenses.filter(e => e.month === month && (e.status === 'Aprovado' || e.status === 'Fechado'));
-  const [yearStr, monthStr] = month.split('-');
-  const daysInMonth = new Date(parseInt(yearStr), parseInt(monthStr), 0).getDate();
-  const weekOf = (dateStr) => {
-    const day = parseInt(dateStr.split('-')[2], 10);
-    return Math.min(Math.ceil(day / 7), 5);
-  };
-  const numWeeks = Math.ceil(daysInMonth / 7);
-  const weekRanges = Array.from({ length: numWeeks }, (_, i) => {
-    const start = i * 7 + 1;
-    const end = Math.min(start + 6, daysInMonth);
-    return { n: i + 1, start, end };
-  });
 
-  const approved = weekFilter === 'all' ? approvedAll : approvedAll.filter(e => weekOf(e.date) === weekFilter);
+  const filterByWeekLocal = (list) => {
+    if (!week) return list;
+    return list.filter(e => {
+      const day = parseInt(e.date.split('-')[2], 10);
+      return day >= week.start && day <= week.end;
+    });
+  };
+
+  const approved = filterByWeekLocal(approvedAll);
 
   const byUser = approved.reduce((acc, exp) => {
     if(!acc[exp.userName]) acc[exp.userName] = { refund: 0, corp: 0, count: 0 };
@@ -1225,34 +1288,29 @@ function ClosingDetails({ month, expenses, onExcel, onZip, onGenerateEmailDraft,
     return acc;
   }, {});
   const totalGeral = Object.values(byUser).reduce((acc, u) => acc + u.refund, 0);
-  const weekLabel = weekFilter === 'all' ? null : weekRanges.find(w => w.n === weekFilter);
   const isDrafting = emailDraftState && emailDraftState.active;
   return (
     <div className="bg-white p-6 sm:p-10 rounded-3xl border border-slate-100 shadow-sm text-left animate-in fade-in duration-300">
-      <div className="flex flex-col sm:flex-row justify-between items-start mb-6 border-b pb-6 gap-4 text-left">
-        <div className="text-left"><p className="text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Mês Referência</p><h3 className="font-black text-3xl text-slate-800">{month}</h3></div>
+      <div className="flex flex-col sm:flex-row justify-between items-start mb-8 border-b pb-6 gap-4 text-left">
+        <div className="text-left">
+          <p className="text-[10px] font-black text-slate-400 uppercase mb-1 tracking-widest">Mês Referência{week ? ` · Semana ${week.n}` : ''}</p>
+          <h3 className="font-black text-3xl text-slate-800">{month}{week ? <span className="text-lg text-slate-400 font-bold"> ({week.start}-{week.end})</span> : ''}</h3>
+        </div>
         <div className="flex flex-wrap gap-3 w-full sm:w-auto">
-          <button onClick={() => onExcel(weekFilter === 'all' ? null : weekLabel)} className="flex-1 sm:flex-none bg-emerald-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg tracking-widest hover:bg-emerald-600 transition-all"><Download size={14}/> Excel {weekFilter === 'all' ? 'GERAL' : `SEMANA ${weekFilter}`}</button>
-          <button onClick={() => onZip(null, weekFilter === 'all' ? null : weekLabel)} disabled={zippingState.active && zippingState.label === 'GERAL'} className="flex-1 sm:flex-none bg-indigo-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-indigo-600 transition-all">
+          <button onClick={onExcel} className="flex-1 sm:flex-none bg-emerald-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg tracking-widest hover:bg-emerald-600 transition-all"><Download size={14}/> Excel {week ? `SEMANA ${week.n}` : 'GERAL'}</button>
+          <button onClick={() => onZip(null)} disabled={zippingState.active && zippingState.label === 'GERAL'} className="flex-1 sm:flex-none bg-indigo-500 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-indigo-600 transition-all">
             {zippingState.active && zippingState.label === 'GERAL' ? <Clock size={14} className="animate-spin"/> : <Archive size={14}/>} ZIP GERAL
           </button>
           {onGenerateEmailDraft && (
-            <button onClick={() => onGenerateEmailDraft(month, weekFilter === 'all' ? null : weekLabel)} disabled={isDrafting} className="flex-1 sm:flex-none bg-slate-800 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-slate-900 transition-all">
+            <button onClick={onGenerateEmailDraft} disabled={isDrafting} className="flex-1 sm:flex-none bg-slate-800 text-white px-5 py-3 rounded-2xl font-black uppercase text-[10px] flex items-center gap-2 shadow-lg disabled:opacity-50 tracking-widest hover:bg-slate-900 transition-all">
               {isDrafting ? <Clock size={14} className="animate-spin"/> : <Send size={14}/>} Gerar Rascunho E-mail
             </button>
           )}
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2 mb-6">
-        <button onClick={() => setWeekFilter('all')} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${weekFilter === 'all' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300'}`}>Mês Inteiro</button>
-        {weekRanges.map(w => (
-          <button key={w.n} onClick={() => setWeekFilter(w.n)} className={`px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border transition-all ${weekFilter === w.n ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300'}`}>Semana {w.n} <span className="opacity-60 normal-case font-bold">({w.start}-{w.end})</span></button>
-        ))}
-      </div>
-
-      <div className="bg-green-50 rounded-3xl p-6 mb-8 border border-green-100 flex items-center justify-between"><div><p className="text-[10px] font-black text-green-600/70 uppercase tracking-widest mb-1">Total a Reembolsar {weekFilter === 'all' ? 'Equipa' : `· Semana ${weekFilter}`}</p><div className="font-black text-4xl text-green-600 tabular-nums">R$ {totalGeral.toFixed(2)}</div></div><Wallet size={48} className="text-green-200"/></div>
-      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Fecho Individual por Vendedor {weekFilter !== 'all' ? `· Semana ${weekFilter}` : ''}</p>
+      <div className="bg-green-50 rounded-3xl p-6 mb-8 border border-green-100 flex items-center justify-between"><div><p className="text-[10px] font-black text-green-600/70 uppercase tracking-widest mb-1">Total a Reembolsar {week ? `· Semana ${week.n}` : 'Equipa'}</p><div className="font-black text-4xl text-green-600 tabular-nums">R$ {totalGeral.toFixed(2)}</div></div><Wallet size={48} className="text-green-200"/></div>
+      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">Fecho Individual por Vendedor {week ? `· Semana ${week.n}` : ''}</p>
       <div className="space-y-4 text-left">
         {Object.keys(byUser).length === 0 && <div className="text-center text-slate-300 italic uppercase text-[10px] font-black tracking-widest py-8">Sem lançamentos aprovados neste período</div>}
         {Object.entries(byUser).map(([name, data]) => (
@@ -1261,7 +1319,7 @@ function ClosingDetails({ month, expenses, onExcel, onZip, onGenerateEmailDraft,
             <div className="flex gap-6 items-center text-right w-full sm:w-auto border-t sm:border-0 pt-3 sm:pt-0">
               <div className="hidden xs:block"><p className="text-[9px] font-black text-slate-400 uppercase tracking-tighter">Cartão Corp</p><p className="font-black text-sm text-slate-500">R$ {data.corp.toFixed(2)}</p></div>
               <div><p className="text-[9px] font-black text-green-600 uppercase">A Reembolsar</p><p className="font-black text-xl text-green-600">R$ {data.refund.toFixed(2)}</p></div>
-              <button onClick={() => onZip(name, weekFilter === 'all' ? null : weekLabel)} disabled={zippingState.active && zippingState.label === name} className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl hover:bg-indigo-600 hover:text-white transition-all disabled:opacity-50 shadow-sm">{zippingState.active && zippingState.label === name ? <Clock size={20} className="animate-spin" /> : <Archive size={20}/>}</button>
+              <button onClick={() => onZip(name)} disabled={zippingState.active && zippingState.label === name} className="p-3 bg-indigo-100 text-indigo-600 rounded-2xl hover:bg-indigo-600 hover:text-white transition-all disabled:opacity-50 shadow-sm">{zippingState.active && zippingState.label === name ? <Clock size={20} className="animate-spin" /> : <Archive size={20}/>}</button>
             </div>
           </div>
         ))}
