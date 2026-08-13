@@ -82,6 +82,7 @@ export default function App() {
   
   const [expenseToEdit, setExpenseToEdit] = useState(null);
   const [reservaToEdit, setReservaToEdit] = useState(null);
+  const [grupoToEdit, setGrupoToEdit] = useState(null);
   const [tripToEdit, setTripToEdit] = useState(null);
   const [itemToDelete, setItemToDelete] = useState(null); 
   const [monthToClose, setMonthToClose] = useState(null);
@@ -294,6 +295,20 @@ export default function App() {
   const handleUpdateReservaStatus = async (id, newStatus) => {
     await fetch(`${ENDPOINT_RESERVAS}?id=eq.${id}`, { method: 'PATCH', headers: HEADERS, body: JSON.stringify({ status: newStatus }) });
     fetchData();
+  };
+
+  const handleEditGrupoSave = async (itemIds, formData) => {
+    setIsLoading(true);
+    try {
+      const payload = {};
+      if (formData.viagem_grupo !== undefined) payload.viagem_grupo = formData.viagem_grupo || null;
+      if (formData.vendedor_id) { payload.vendedor_id = formData.vendedor_id; payload.vendedor_nome = formData.vendedor_nome; }
+      if (formData.cliente !== undefined && formData.cliente !== '') payload.cliente = formData.cliente;
+      const idsFilter = itemIds.map(id => `"${id}"`).join(',');
+      const res = await fetch(`${ENDPOINT_RESERVAS}?id=in.(${idsFilter})`, { method: 'PATCH', headers: HEADERS, body: JSON.stringify(payload) });
+      if (res.ok) { await fetchData(); setGrupoToEdit(null); setSystemMessage({ title: 'Viagem Atualizada', text: 'As reservas dessa viagem foram atualizadas em conjunto!' }); return true; }
+      return false;
+    } finally { setIsLoading(false); }
   };
 
   const handleEditReservaSave = async (id, formData) => {
@@ -760,14 +775,15 @@ export default function App() {
           {activeTab === 'fechamento' && <MonthlyClosing expenses={expenses} trips={trips} onDownloadExcel={handleDownloadExcel} onDownloadZip={handleDownloadZip} onGenerateEmailDraft={handleGenerateEmailDraft} zippingState={zippingState} emailDraftState={emailDraftState} />}
           {activeTab === 'equipa' && <TeamManagement users={users} onAddUser={handleAddUser} onDeleteUser={(id) => setItemToDelete({ type: 'user', id })} loading={isLoading} />}
           {activeTab === 'nova_reserva' && <ReservaForm vendedores={users.filter(u => (u.role === 'vendedor' || u.role === 'gestor') && u.ativo !== false)} reservasExistentes={reservas} onExtract={handleExtractReserva} onSubmit={handleAddReserva} isExtracting={isExtracting} loading={isLoading} />}
-          {activeTab === 'minhas_reservas' && <ReservaList data={reservas.filter(r => r.userId === currentUser.id)} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onEditReserva={setReservaToEdit} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Minhas Reservas" />}
-          {activeTab === 'reservas_geral' && <ReservaList data={reservas} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onEditReserva={setReservaToEdit} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Todas as Reservas" showOwner />}
+          {activeTab === 'minhas_reservas' && <ReservaList data={reservas.filter(r => r.userId === currentUser.id)} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onEditReserva={setReservaToEdit} onEditGrupo={setGrupoToEdit} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Minhas Reservas" />}
+          {activeTab === 'reservas_geral' && <ReservaList data={reservas} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onEditReserva={setReservaToEdit} onEditGrupo={setGrupoToEdit} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Todas as Reservas" showOwner />}
         </div>
       </div>
 
       {attachmentToView && <AttachmentModal fileData={attachmentToView} onClose={() => setAttachmentToView(null)} />}
       {expenseToEdit && <EditExpenseModal expense={expenseToEdit} trips={trips.filter(t => t.userId === expenseToEdit.userId)} onSave={handleEditExpenseSave} onClose={() => setExpenseToEdit(null)} loading={isLoading} />}
       {reservaToEdit && <EditReservaModal reserva={reservaToEdit} vendedores={users.filter(u => (u.role === 'vendedor' || u.role === 'gestor') && u.ativo !== false)} reservasExistentes={reservas} onSave={handleEditReservaSave} onClose={() => setReservaToEdit(null)} loading={isLoading} />}
+      {grupoToEdit && <EditGrupoModal grupo={grupoToEdit} vendedores={users.filter(u => (u.role === 'vendedor' || u.role === 'gestor') && u.ativo !== false)} onSave={handleEditGrupoSave} onClose={() => setGrupoToEdit(null)} loading={isLoading} />}
       {tripToEdit && <EditTripModal trip={tripToEdit} onSave={handleEditTripSave} onClose={() => setTripToEdit(null)} loading={isLoading} />}
       {itemToDelete && <ConfirmModal item={itemToDelete} onConfirm={executeDeletion} onClose={() => setItemToDelete(null)} loading={isLoading} />}
       {monthToClose && <CloseMonthModal month={monthToClose} onConfirm={handleConfirmCloseMonth} onClose={() => setMonthToClose(null)} loading={isLoading} />}
@@ -1486,7 +1502,7 @@ function ReservaForm({ vendedores = [], reservasExistentes = [], onExtract, onSu
   );
 }
 
-function ReservaList({ data, onUpdateStatus, onViewAttachment, onEditReserva, onDeleteReserva, title, showOwner }) {
+function ReservaList({ data, onUpdateStatus, onViewAttachment, onEditReserva, onEditGrupo, onDeleteReserva, title, showOwner }) {
   const [filtroVendedor, setFiltroVendedor] = useState('');
   const [filtroTipo, setFiltroTipo] = useState('');
   const [filtroStatus, setFiltroStatus] = useState('');
@@ -1622,6 +1638,7 @@ function ReservaList({ data, onUpdateStatus, onViewAttachment, onEditReserva, on
                             <div className="bg-amber-100 p-1.5 rounded-lg"><Briefcase size={14} className="text-amber-700"/></div>
                             <span className="font-black text-amber-800 text-xs uppercase tracking-widest">{key}</span>
                             <span className="text-[9px] font-bold text-amber-600 bg-amber-100 px-2 py-0.5 rounded-md uppercase tracking-widest">{tipos.join(' + ')}</span>
+                            {onEditGrupo && <button onClick={() => onEditGrupo({ nome: key, itemIds: tripItems.map(r => r.id), vendedor_id: tripItems[0]?.vendedor_id, vendedor_nome: tripItems[0]?.vendedor_nome, cliente: tripItems[0]?.cliente })} className="p-1.5 bg-white rounded-lg text-amber-700 hover:bg-amber-600 hover:text-white transition-all shadow-sm border border-amber-200"><Edit3 size={12}/></button>}
                           </div>
                           <span className="font-black text-amber-800 text-sm">Total: R$ {total.toFixed(2)}</span>
                         </div>
@@ -1648,6 +1665,47 @@ function NavBtn({ active, onClick, icon, label, badge }) {
       <div className="flex items-center gap-4 text-left">{icon} {label}</div>
       {badge > 0 && <span className="bg-red-500 text-white text-[9px] px-2 py-1 rounded-xl ring-4 ring-slate-50 animate-pulse">{badge}</span>}
     </button>
+  );
+}
+
+function EditGrupoModal({ grupo, vendedores = [], onSave, onClose, loading }) {
+  const [form, setForm] = useState({
+    viagem_grupo: grupo.nome || '',
+    vendedor_id: grupo.vendedor_id || '',
+    vendedor_nome: grupo.vendedor_nome || '',
+    cliente: grupo.cliente || '',
+  });
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/90 flex items-center justify-center p-4 z-50 backdrop-blur-md overflow-y-auto">
+      <div className="bg-white rounded-[40px] max-w-lg w-full p-6 sm:p-10 shadow-2xl text-left animate-in zoom-in-95 duration-200 my-8">
+        <div className="flex justify-between items-center mb-6 border-b pb-4 text-left"><h3 className="font-black text-2xl text-slate-800 flex items-center gap-3"><Briefcase className="text-amber-600"/> Editar Viagem</h3><button onClick={onClose} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200 transition-all"><X size={20}/></button></div>
+        <p className="text-xs text-slate-400 italic mb-6">Isto atualiza de uma vez todas as reservas (Hotel, Carro, Passagem) que fazem parte desta viagem.</p>
+
+        <div className="space-y-5 text-left">
+          <div className="text-left">
+            <label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Nome da Viagem</label>
+            <input type="text" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" value={form.viagem_grupo} onChange={e => setForm({ ...form, viagem_grupo: e.target.value })} />
+          </div>
+          <div className="bg-blue-50 p-5 rounded-3xl border border-blue-100">
+            <label className="text-[10px] font-black text-blue-800 uppercase block mb-2 tracking-widest">Vendedor Responsável (aplica a todas)</label>
+            <select className="w-full p-4 border border-blue-200 rounded-2xl bg-white font-bold outline-none" value={form.vendedor_id} onChange={e => {
+              const v = vendedores.find(u => u.id === e.target.value);
+              setForm({ ...form, vendedor_id: e.target.value, vendedor_nome: v ? v.name : '' });
+            }}>
+              <option value="">-- Manter atual de cada reserva --</option>
+              {vendedores.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+            </select>
+          </div>
+          <div className="text-left">
+            <label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Cliente (aplica a todas)</label>
+            <input type="text" placeholder="Deixe em branco para manter o atual de cada reserva" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" value={form.cliente} onChange={e => setForm({ ...form, cliente: e.target.value })} />
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-4 pt-6 border-t mt-6"><button onClick={onClose} className="px-8 py-4 rounded-2xl font-black uppercase text-xs text-slate-400 hover:bg-slate-100 transition-all">Cancelar</button><button onClick={() => onSave(grupo.itemIds, form)} disabled={loading} className="bg-amber-600 text-white px-10 py-4 rounded-2xl font-black uppercase text-xs shadow-xl tracking-widest hover:bg-amber-700 transition-all">GUARDAR VIAGEM</button></div>
+      </div>
+    </div>
   );
 }
 
