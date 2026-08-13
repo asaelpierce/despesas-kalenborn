@@ -81,6 +81,7 @@ export default function App() {
   const [zippingState, setZippingState] = useState({ active: false, label: '' });
   
   const [expenseToEdit, setExpenseToEdit] = useState(null);
+  const [reservaToEdit, setReservaToEdit] = useState(null);
   const [tripToEdit, setTripToEdit] = useState(null);
   const [itemToDelete, setItemToDelete] = useState(null); 
   const [monthToClose, setMonthToClose] = useState(null);
@@ -293,6 +294,34 @@ export default function App() {
   const handleUpdateReservaStatus = async (id, newStatus) => {
     await fetch(`${ENDPOINT_RESERVAS}?id=eq.${id}`, { method: 'PATCH', headers: HEADERS, body: JSON.stringify({ status: newStatus }) });
     fetchData();
+  };
+
+  const handleEditReservaSave = async (id, formData) => {
+    setIsLoading(true);
+    try {
+      let receiptName = formData.receiptName;
+      if (formData.newFile) {
+        try {
+          const { uniqueFileName } = await uploadReservaFile(formData.newFile);
+          receiptName = uniqueFileName;
+        } catch (err) {
+          setSystemMessage({ title: 'Falha no envio', text: err.message || 'Não foi possível enviar o novo comprovativo.' });
+          return false;
+        }
+      }
+      const payload = {
+        tipo: formData.tipo, fornecedor: formData.fornecedor,
+        valor: formData.valor ? parseFloat(formData.valor) : null,
+        data_inicio: formData.data_inicio || null, data_fim: formData.data_fim || null,
+        local: formData.local, cliente: formData.cliente, observacoes: formData.observacoes,
+        vendedor_id: formData.vendedor_id || null, vendedor_nome: formData.vendedor_nome || null,
+        viagem_grupo: formData.viagem_grupo || null,
+        receiptName,
+      };
+      const res = await fetch(`${ENDPOINT_RESERVAS}?id=eq.${id}`, { method: 'PATCH', headers: HEADERS, body: JSON.stringify(payload) });
+      if (res.ok) { await fetchData(); setReservaToEdit(null); setSystemMessage({ title: 'Reserva Atualizada', text: 'As alterações foram guardadas com sucesso!' }); return true; }
+      return false;
+    } finally { setIsLoading(false); }
   };
 
   const handleEditExpenseSave = async (id, updatedData) => {
@@ -731,13 +760,14 @@ export default function App() {
           {activeTab === 'fechamento' && <MonthlyClosing expenses={expenses} trips={trips} onDownloadExcel={handleDownloadExcel} onDownloadZip={handleDownloadZip} onGenerateEmailDraft={handleGenerateEmailDraft} zippingState={zippingState} emailDraftState={emailDraftState} />}
           {activeTab === 'equipa' && <TeamManagement users={users} onAddUser={handleAddUser} onDeleteUser={(id) => setItemToDelete({ type: 'user', id })} loading={isLoading} />}
           {activeTab === 'nova_reserva' && <ReservaForm vendedores={users.filter(u => (u.role === 'vendedor' || u.role === 'gestor') && u.ativo !== false)} reservasExistentes={reservas} onExtract={handleExtractReserva} onSubmit={handleAddReserva} isExtracting={isExtracting} loading={isLoading} />}
-          {activeTab === 'minhas_reservas' && <ReservaList data={reservas.filter(r => r.userId === currentUser.id)} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Minhas Reservas" />}
-          {activeTab === 'reservas_geral' && <ReservaList data={reservas} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Todas as Reservas" showOwner />}
+          {activeTab === 'minhas_reservas' && <ReservaList data={reservas.filter(r => r.userId === currentUser.id)} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onEditReserva={setReservaToEdit} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Minhas Reservas" />}
+          {activeTab === 'reservas_geral' && <ReservaList data={reservas} onUpdateStatus={handleUpdateReservaStatus} onViewAttachment={setAttachmentToView} onEditReserva={setReservaToEdit} onDeleteReserva={(id) => setItemToDelete({ type: 'reserva', id })} title="Todas as Reservas" showOwner />}
         </div>
       </div>
 
       {attachmentToView && <AttachmentModal fileData={attachmentToView} onClose={() => setAttachmentToView(null)} />}
       {expenseToEdit && <EditExpenseModal expense={expenseToEdit} trips={trips.filter(t => t.userId === expenseToEdit.userId)} onSave={handleEditExpenseSave} onClose={() => setExpenseToEdit(null)} loading={isLoading} />}
+      {reservaToEdit && <EditReservaModal reserva={reservaToEdit} vendedores={users.filter(u => (u.role === 'vendedor' || u.role === 'gestor') && u.ativo !== false)} reservasExistentes={reservas} onSave={handleEditReservaSave} onClose={() => setReservaToEdit(null)} loading={isLoading} />}
       {tripToEdit && <EditTripModal trip={tripToEdit} onSave={handleEditTripSave} onClose={() => setTripToEdit(null)} loading={isLoading} />}
       {itemToDelete && <ConfirmModal item={itemToDelete} onConfirm={executeDeletion} onClose={() => setItemToDelete(null)} loading={isLoading} />}
       {monthToClose && <CloseMonthModal month={monthToClose} onConfirm={handleConfirmCloseMonth} onClose={() => setMonthToClose(null)} loading={isLoading} />}
@@ -1456,7 +1486,7 @@ function ReservaForm({ vendedores = [], reservasExistentes = [], onExtract, onSu
   );
 }
 
-function ReservaList({ data, onUpdateStatus, onViewAttachment, onDeleteReserva, title, showOwner }) {
+function ReservaList({ data, onUpdateStatus, onViewAttachment, onEditReserva, onDeleteReserva, title, showOwner }) {
   const [filtroVendedor, setFiltroVendedor] = useState('');
   const [filtroTipo, setFiltroTipo] = useState('');
   const [filtroStatus, setFiltroStatus] = useState('');
@@ -1573,6 +1603,7 @@ function ReservaList({ data, onUpdateStatus, onViewAttachment, onDeleteReserva, 
                       <option value="Cancelada">Cancelada</option>
                     </select>
                     {r.receiptName && <button onClick={() => onViewAttachment({ name: r.receiptName, userId: `reservas/${r.userId}` })} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Eye size={20}/></button>}
+                    {onEditReserva && <button onClick={() => onEditReserva(r)} className="p-3 bg-slate-100 rounded-2xl text-slate-600 hover:bg-blue-600 hover:text-white transition-all shadow-sm"><Edit3 size={18}/></button>}
                     <button onClick={() => onDeleteReserva(r.id)} className="p-3 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm"><Trash2 size={18}/></button>
                   </div>
                 </div>
@@ -1617,6 +1648,114 @@ function NavBtn({ active, onClick, icon, label, badge }) {
       <div className="flex items-center gap-4 text-left">{icon} {label}</div>
       {badge > 0 && <span className="bg-red-500 text-white text-[9px] px-2 py-1 rounded-xl ring-4 ring-slate-50 animate-pulse">{badge}</span>}
     </button>
+  );
+}
+
+function EditReservaModal({ reserva, vendedores = [], reservasExistentes = [], onSave, onClose, loading }) {
+  const [form, setForm] = useState({
+    tipo: reserva.tipo || 'Hotel',
+    fornecedor: reserva.fornecedor || '',
+    valor: reserva.valor ?? '',
+    data_inicio: reserva.data_inicio || '',
+    data_fim: reserva.data_fim || '',
+    local: reserva.local || '',
+    cliente: reserva.cliente || '',
+    observacoes: reserva.observacoes || '',
+    vendedor_id: reserva.vendedor_id || '',
+    vendedor_nome: reserva.vendedor_nome || '',
+    viagem_grupo: reserva.viagem_grupo || '',
+    receiptName: reserva.receiptName || null,
+    newFile: null,
+  });
+  const [novaViagemMode, setNovaViagemMode] = useState(false);
+
+  const gruposSugeridos = [...new Set(
+    reservasExistentes.filter(r => !form.vendedor_id || r.vendedor_id === form.vendedor_id).map(r => r.viagem_grupo).filter(Boolean)
+  )].sort();
+
+  const publicUrl = form.receiptName ? `${SUPABASE_URL}/storage/v1/object/public/${STORAGE_BUCKET}/reservas/${reserva.userId}/${form.receiptName}` : null;
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/90 flex items-center justify-center p-4 z-50 backdrop-blur-md overflow-y-auto">
+      <div className="bg-white rounded-[40px] max-w-2xl w-full p-6 sm:p-10 shadow-2xl text-left animate-in zoom-in-95 duration-200 my-8">
+        <div className="flex justify-between items-center mb-8 border-b pb-4 text-left"><h3 className="font-black text-2xl text-slate-800 flex items-center gap-3"><Edit3 className="text-blue-500"/> Editar Reserva</h3><button onClick={onClose} className="p-2 bg-slate-100 rounded-full hover:bg-slate-200 transition-all"><X size={20}/></button></div>
+
+        <div className="space-y-5 text-left">
+          <div className="bg-slate-50 p-5 rounded-3xl border border-slate-100">
+            <label className="text-[10px] font-black text-slate-500 uppercase block mb-2 tracking-widest">Comprovativo</label>
+            {form.newFile ? (
+              <div className="flex items-center justify-between gap-3 p-3 bg-emerald-50 border border-emerald-200 rounded-2xl">
+                <div className="flex items-center gap-2 text-emerald-700 font-bold text-sm truncate"><FileText size={16}/> {form.newFile.name} <span className="text-[9px] uppercase font-black bg-emerald-100 px-2 py-0.5 rounded-md">NOVO</span></div>
+                <button type="button" onClick={() => setForm({ ...form, newFile: null })} className="p-2 bg-white rounded-xl text-slate-400 hover:text-red-500 transition-all shrink-0"><X size={16}/></button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-3">
+                {publicUrl ? (
+                  <a href={publicUrl} target="_blank" rel="noreferrer" className="flex items-center gap-2 text-blue-600 font-bold text-sm hover:underline truncate"><FileText size={16}/> Ver comprovativo atual <ExternalLink size={14}/></a>
+                ) : (
+                  <span className="text-slate-400 italic text-sm">Sem comprovativo anexado</span>
+                )}
+                <label className="shrink-0 cursor-pointer bg-slate-800 text-white px-4 py-2 rounded-xl font-black text-[10px] uppercase tracking-widest hover:bg-slate-900 transition-all flex items-center gap-2">
+                  <Upload size={14}/> Substituir
+                  <input type="file" accept=".pdf,.jpg,.jpeg,.png,.webp" className="hidden" onChange={e => e.target.files[0] && setForm({ ...form, newFile: e.target.files[0] })} />
+                </label>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-blue-50 p-5 rounded-3xl border border-blue-100">
+            <label className="text-[10px] font-black text-blue-800 uppercase block mb-2 tracking-widest">Vendedor Responsável</label>
+            <select className="w-full p-4 border border-blue-200 rounded-2xl bg-white font-bold outline-none" value={form.vendedor_id} onChange={e => {
+              const v = vendedores.find(u => u.id === e.target.value);
+              setForm({ ...form, vendedor_id: e.target.value, vendedor_nome: v ? v.name : '' });
+            }}>
+              <option value="">-- Selecionar Vendedor --</option>
+              {vendedores.map(v => <option key={v.id} value={v.id}>{v.name}</option>)}
+            </select>
+          </div>
+
+          <div className="bg-amber-50 p-5 rounded-3xl border border-amber-100">
+            <label className="text-[10px] font-black text-amber-800 uppercase block mb-2 tracking-widest">Viagem / Grupo (opcional)</label>
+            {!novaViagemMode ? (
+              <select className="w-full p-4 border border-amber-200 rounded-2xl bg-white font-bold outline-none" value={form.viagem_grupo} onChange={e => {
+                if (e.target.value === '__nova__') { setNovaViagemMode(true); setForm({ ...form, viagem_grupo: '' }); }
+                else setForm({ ...form, viagem_grupo: e.target.value });
+              }}>
+                <option value="">-- Sem viagem / avulso --</option>
+                {gruposSugeridos.map(g => <option key={g} value={g}>{g}</option>)}
+                <option value="__nova__">+ Criar nova viagem...</option>
+              </select>
+            ) : (
+              <div className="flex gap-2">
+                <input type="text" autoFocus className="flex-1 p-4 border border-amber-200 rounded-2xl bg-white font-bold outline-none" placeholder="Ex: Viagem Vitória - Jul/2026" value={form.viagem_grupo} onChange={e => setForm({ ...form, viagem_grupo: e.target.value })} />
+                <button type="button" onClick={() => { setNovaViagemMode(false); setForm({ ...form, viagem_grupo: '' }); }} className="px-4 bg-slate-100 rounded-2xl text-slate-500 font-black text-xs uppercase hover:bg-slate-200 transition-all">Cancelar</button>
+              </div>
+            )}
+          </div>
+
+          <div className="text-left">
+            <label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Tipo de Reserva</label>
+            <div className="grid grid-cols-3 gap-2">
+              {RESERVA_TIPOS.map(t => (
+                <button key={t} type="button" onClick={() => setForm({ ...form, tipo: t })} className={`p-3 rounded-2xl font-black uppercase text-xs border transition-all ${form.tipo === t ? 'bg-blue-600 text-white border-blue-600' : 'bg-slate-50 border-slate-200 text-slate-500'}`}>{t}</button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div className="text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Fornecedor</label><input type="text" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" value={form.fornecedor} onChange={e => setForm({ ...form, fornecedor: e.target.value })} /></div>
+            <div className="text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Valor (R$)</label><input type="number" step="0.01" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" value={form.valor} onChange={e => setForm({ ...form, valor: e.target.value })} /></div>
+            <div className="text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Data Início</label><input type="date" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" value={form.data_inicio} onChange={e => setForm({ ...form, data_inicio: e.target.value })} /></div>
+            <div className="text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Data Fim</label><input type="date" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" value={form.data_fim} onChange={e => setForm({ ...form, data_fim: e.target.value })} /></div>
+            <div className="text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Local</label><input type="text" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" value={form.local} onChange={e => setForm({ ...form, local: e.target.value })} /></div>
+            <div className="text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Cliente</label><input type="text" className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold" value={form.cliente} onChange={e => setForm({ ...form, cliente: e.target.value })} /></div>
+            <div className="sm:col-span-2 text-left"><label className="text-[10px] font-black text-slate-500 uppercase block mb-2 ml-1">Observações</label><textarea rows={3} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl font-bold resize-none" value={form.observacoes} onChange={e => setForm({ ...form, observacoes: e.target.value })} /></div>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-4 pt-6 border-t mt-6"><button onClick={onClose} className="px-8 py-4 rounded-2xl font-black uppercase text-xs text-slate-400 hover:bg-slate-100 transition-all">Cancelar</button><button onClick={() => onSave(reserva.id, form)} disabled={loading} className="bg-blue-600 text-white px-10 py-4 rounded-2xl font-black uppercase text-xs shadow-xl tracking-widest hover:bg-blue-700 transition-all">GUARDAR</button></div>
+      </div>
+    </div>
   );
 }
 
